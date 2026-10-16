@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .config import assert_safe_for_production, settings
 from .db import Base, SessionLocal, engine
-from .api import routes_core, routes_ops, routes_posting
+from .api import routes_core, routes_integrations, routes_ops, routes_posting
 
 log = logging.getLogger("cashapp")
 
@@ -34,8 +34,8 @@ async def unhandled(request: Request, exc: Exception):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "region": settings.deploy_region or None, "residency_strict": settings.residency_strict}
 
 
-for r in (routes_core.router, routes_ops.router, routes_posting.router):
+for r in (routes_core.router, routes_integrations.router, routes_ops.router, routes_posting.router):
     app.include_router(r, prefix="/api/v1")

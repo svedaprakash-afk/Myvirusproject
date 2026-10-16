@@ -32,7 +32,7 @@ export default function Receipts() {
                 <td style={{ maxWidth: 420 }}><div className="mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={t.narration}>{t.narration}</div></td>
                 <td>{t.payer_name ?? <span className="faint">—</span>}{t.customer && <div className="muted" style={{ fontSize: 12 }}>→ {t.customer.name} {t.customer_confidence !== null && `(${pct(t.customer_confidence)})`}</div>}</td>
                 <td><Chip tone="info">{t.channel}</Chip></td>
-                <td className="num">{t.fee_minor ? <span title={`bank credit ${money(t.amount_minor)} + fee ${money(t.fee_minor)}`}>{money(t.receivable_minor)}</span> : money(t.amount_minor)}</td>
+                <td className="num">{t.fee_minor ? <span title={`bank credit ${money(t.amount_minor, t.currency)} + fee ${money(t.fee_minor, t.currency)}`}>{money(t.receivable_minor, t.currency)}</span> : money(t.amount_minor, t.currency)}{t.fx_ccy && <div className="faint" style={{ fontSize: 11.5 }}>payer sent {money(t.fx_minor, t.fx_ccy)}</div>}</td>
                 <td><StatusChip s={t.status} /></td></tr>
             ))}</tbody></table>
         )}

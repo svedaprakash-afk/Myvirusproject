@@ -34,7 +34,7 @@ def name_similarity(a: str, b: str) -> float:
 
 
 def identify(ctx: Ctx, txn: PaymentTransaction, extra_text: str = "", remit_payer: str | None = None,
-             ref_customers: dict[int, str] | None = None) -> list[Guess]:
+             ref_customers: dict[int, str] | None = None, remit_sender: str | None = None) -> list[Guess]:
     """Return guesses sorted best-first. `ref_customers` maps customer_id -> 'exact'|'serial' from reference hits."""
     guesses: dict[int, Guess] = {}
 
@@ -63,6 +63,8 @@ def identify(ctx: Ctx, txn: PaymentTransaction, extra_text: str = "", remit_paye
         add(cid, 0.97, f"UPI handle {txn.payer_vpa} previously used by this customer")
     if txn.payer_account and (cid := ctx.ident.get(("account", normalise_account(txn.payer_account)))):
         add(cid, 0.97, "Payer account previously used by this customer")
+    if remit_sender and (cid := ctx.ident.get(("email", remit_sender.lower()))):
+        add(cid, 0.93, f"Remittance advice came from {remit_sender}, a known address of this customer")
     # 4. fuzzy payer name (bank narration name, remittance name)
     for label, nm in (("Payer name", txn.payer_name), ("Remittance sender", remit_payer)):
         n = normalise_name(nm)

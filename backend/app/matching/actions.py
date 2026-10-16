@@ -91,7 +91,12 @@ def _learn(db: Session, p: MatchProposal, txn: PaymentTransaction) -> None:
     if not p.customer_id:
         return
     cid = p.customer_id
-    for kind, val in (("name", normalise_name(txn.payer_name)), ("vpa", (txn.payer_vpa or "").lower()), ("account", normalise_account(txn.payer_account))):
+    from ..models import RemittanceDocument
+
+    doc = db.get(RemittanceDocument, txn.remittance_id) if txn.remittance_id else None
+    sender = (doc.sender or "").lower() if doc and doc.auth_result and "dkim=pass" in doc.auth_result else ""   # learn only authenticated senders
+    for kind, val in (("name", normalise_name(txn.payer_name)), ("vpa", (txn.payer_vpa or "").lower()), ("account", normalise_account(txn.payer_account)),
+                      ("email", sender)):
         if not val:
             continue
         row = db.execute(select(CustomerIdentifier).where(CustomerIdentifier.entity_id == p.entity_id, CustomerIdentifier.customer_id == cid,

@@ -30,7 +30,7 @@ export default function Exceptions() {
               const late = x.due_at && new Date(x.due_at + "Z") < new Date() && !x.resolution;
               return (
                 <div key={x.id} className={`list-item ${cur?.id === x.id ? "sel" : ""}`} onClick={() => setSel(x.id)}>
-                  <div className="row between"><Chip tone={x.type === "duplicate_payment" || x.type === "unidentified_receipt" ? "bad" : "warn"}>{lbl(x.type)}</Chip><b className="num">{money(x.amount_minor)}</b></div>
+                  <div className="row between"><Chip tone={x.type === "duplicate_payment" || x.type === "unidentified_receipt" ? "bad" : "warn"}>{lbl(x.type)}</Chip><b className="num">{money(x.amount_minor, x.currency ?? "INR")}</b></div>
                   <div style={{ fontSize: 13, marginTop: 3 }}>{x.customer?.name ?? <i className="muted">no customer</i>}</div>
                   <div className="faint" style={{ fontSize: 12 }}>{ago(x.created_at)} · priority {x.priority.toFixed(0)} {late && <span style={{ color: "var(--bad)" }}>· past SLA</span>} <StatusChip s={x.status} /></div>
                 </div>
@@ -75,7 +75,7 @@ function Case({ id, canAct }: { id: number; canAct: boolean }) {
   return (
     <div className="grid">
       <div className="card">
-        <div className="row between wrap"><div><Chip tone="bad">{lbl(x.type)}</Chip> <StatusChip s={x.status} /></div><b style={{ fontSize: 22 }} className="num">{money(x.amount_minor)}</b></div>
+        <div className="row between wrap"><div><Chip tone="bad">{lbl(x.type)}</Chip> <StatusChip s={x.status} /></div><b style={{ fontSize: 22 }} className="num">{money(x.amount_minor, x.currency ?? "INR")}</b></div>
         <p>{x.reason}</p>
         {x.txn && <div className="pre">{x.txn.narration}</div>}
         <div className="muted mt" style={{ fontSize: 12.5 }}>Opened {ago(x.created_at)} · SLA {x.due_at ? date(x.due_at) : "—"} {x.resolution && <>· Resolution: <b>{title(x.resolution)}</b></>}</div>
@@ -127,7 +127,7 @@ function ActionModal({ act, x, entityId, onClose, onDone }: { act: Act; x: Excep
         <div className="card flush mt" style={{ maxHeight: 150, overflow: "auto" }}><table><tbody>{res.map((c) => <tr key={c.id} className={`click ${cust?.id === c.id ? "sel" : ""}`} onClick={() => setCust(c)}><td>{c.name}</td><td className="muted">{c.code}</td></tr>)}</tbody></table></div>
         {cust && <div className="chip good mt">Selected: {cust.name}</div>}</Field>}
       {act.amount && <>
-        <Field label="Invoice"><select value={invId ?? ""} onChange={(e) => setInvId(Number(e.target.value))}>{invs.map((i) => <option key={i.id} value={i.id}>{i.number} — open {money(i.open_minor)}</option>)}</select></Field>
+        <Field label="Invoice"><select value={invId ?? ""} onChange={(e) => setInvId(Number(e.target.value))}>{invs.map((i) => <option key={i.id} value={i.id}>{i.number} — open {money(i.open_minor, i.currency)}</option>)}</select></Field>
         <Field label="Amount to write off (₹)"><input value={amt} onChange={(e) => setAmt(e.target.value)} inputMode="decimal" />{Number.isNaN(m) && <span style={{ color: "var(--bad)" }}>Enter a valid amount</span>}</Field></>}
       {act.needsReason && <Field label="Reason (required, audited)" hint="A different person with sufficient authority must approve this."><textarea value={reason} onChange={(e) => setReason(e.target.value)} /></Field>}
       {!act.needsReason && <Field label="Note (optional)"><textarea value={reason} onChange={(e) => setReason(e.target.value)} /></Field>}

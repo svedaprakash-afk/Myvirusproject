@@ -13,6 +13,8 @@ from .. import audit
 from ..config import settings
 from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PostingBatch, PostingLine,
                       ProposalStatus, MatchProposal, TxnStatus, User, utcnow, DEFAULT_LEDGERS, DEFAULT_ENTITY_CONFIG)
+from ..fx import MissingRate, need_rate, to_base
+from . import mapped
 from .connectors import REGISTRY
 
 
@@ -28,61 +30,102 @@ def voucher_for(txn: PaymentTransaction) -> str:
     return f"CA-{txn.entity_id}-{txn.txn_date:%y%m%d}-{txn.id}"
 
 
+FX_PLUG_MAX_BP = 500   # a realised FX difference above 5% of the receipt means a wrong rate or wrong match: refuse, don't post
+
+
 def journal_for_proposal(db: Session, entity: LegalEntity, p: MatchProposal) -> list[PostingLine]:
+    """Balanced (in base currency) journal for one receipt. Lines carry document-currency AND base amounts so any ERP can
+    consume them. Foreign settlements get an explicit realised FX gain/loss line computed from booking vs settlement rates."""
+    base = entity.base_currency
     txn = db.get(PaymentTransaction, p.txn_id)
     bank = txn.bank_account
     vno, d, ccy = voucher_for(txn), txn.value_date or txn.txn_date, txn.currency
     nar = f"Receipt {txn.utr or txn.bank_ref or txn.id} {txn.payer_name or ''}".strip()[:290]
+    try:
+        txn_rate = txn.fx_rate_micro or need_rate(db, ccy, d, base)
+    except MissingRate as e:
+        raise PostingError(str(e))
     L: list[PostingLine] = []
 
-    def add(line_type, account, dr=0, cr=0, inv=None, narration=nar, cust=None):
+    def add(line_type, account, dr=0, cr=0, *, currency=None, rate=None, inv=None, narration=nar, cust=None):
         if not (dr or cr):
             return
+        currency = currency or ccy
+        rate = rate or txn_rate
         pl = PostingLine(voucher_no=vno, txn_id=txn.id, proposal_id=p.id, invoice_id=inv.id if inv else None, customer_id=cust or p.customer_id,
-                         line_type=line_type, account=account, debit_minor=dr, credit_minor=cr, currency=ccy, posting_date=d, narration=narration)
+                         line_type=line_type, account=account, debit_minor=dr, credit_minor=cr, currency=currency,
+                         base_debit_minor=dr if currency == base else to_base(dr, rate), base_credit_minor=cr if currency == base else to_base(cr, rate),
+                         rate_micro=None if currency == base else rate, posting_date=d, narration=narration)
         pl._inv = inv.number if inv else None  # type: ignore[attr-defined]
         pl._party = db.get(Customer, pl.customer_id).code if pl.customer_id else None  # type: ignore[attr-defined]
         L.append(pl)
 
     add("bank_receipt", bank.ledger_code, dr=txn.amount_minor)
     if txn.fee_minor:
-        fee_only = (txn.extra or {}).get("fee_only")
-        gst = (txn.extra or {}).get("tax_on_fee")
+        fee_only, gst = (txn.extra or {}).get("fee_only"), (txn.extra or {}).get("tax_on_fee")
         if fee_only is not None and gst is not None and fee_only + gst == txn.fee_minor:
             add("gateway_fee", _ledger(entity, "bank_charges"), dr=fee_only, narration=f"Gateway fee {nar}"[:290])
             add("gst_on_fee", _ledger(entity, "gst_input_on_fees"), dr=gst, narration=f"GST on gateway fee {nar}"[:290])
         else:
             add("gateway_fee", _ledger(entity, "bank_charges"), dr=txn.fee_minor, narration=f"Gateway fee {nar}"[:290])
     ar_default = _ledger(entity, "ar_control")
+    cross = bool(p.settle_currency and p.settle_currency != ccy)
     for a in p.allocations:
         inv: Invoice = a.invoice
         cust = db.get(Customer, inv.customer_id)
-        acct = cust.ar_ledger or ar_default
+        icur, irate = inv.currency, inv.booking_rate_micro or 1_000_000
         if a.tds_minor:
-            add("tds_receivable", _ledger(entity, "tds_receivable"), dr=a.tds_minor, inv=inv, narration=f"TDS {a.tds_section or ''} on {inv.number}".strip())
+            add("tds_receivable", _ledger(entity, "tds_receivable"), dr=a.tds_minor, inv=inv, currency=icur, rate=irate, narration=f"TDS {a.tds_section or ''} on {inv.number}".strip())
         cleared = a.applied_minor + a.tds_minor + a.writeoff_minor
-        add("ar_clearance", acct, cr=cleared if cleared > 0 else 0, dr=-cleared if cleared < 0 else 0, inv=inv, cust=inv.customer_id,
-            narration=f"Against {inv.number}")
+        add("ar_clearance", cust.ar_ledger or ar_default, cr=cleared if cleared > 0 else 0, dr=-cleared if cleared < 0 else 0, inv=inv, cust=inv.customer_id,
+            currency=icur, rate=irate, narration=f"Against {inv.number}")
     w = p.writeoff_minor
     if w > 0:
-        add("writeoff_tolerance", _ledger(entity, "write_off"), dr=w, narration=f"Tolerance write-off {nar}"[:290])
+        acct, lt = (_ledger(entity, "bank_charges"), "bank_charges_foreign") if p.writeoff_kind == "bank_charge" else (_ledger(entity, "write_off"), "writeoff_tolerance")
+        add(lt, acct, dr=w, narration=f"{'Intermediary bank charges' if p.writeoff_kind == 'bank_charge' else 'Tolerance write-off'} {nar}"[:290])
     elif w < 0:
         add("rounding_gain", _ledger(entity, "write_off"), cr=-w, narration=f"Rounding gain {nar}"[:290])
     add("unapplied_cash", _ledger(entity, "unapplied_cash"), cr=p.unapplied_minor, narration=f"On-account / overpayment {nar}"[:290])
-    dr, cr = sum(x.debit_minor for x in L), sum(x.credit_minor for x in L)
-    if dr != cr:
-        raise PostingError(f"Journal for receipt {txn.id} does not balance (Dr {dr} / Cr {cr}); refusing to post")
+
+    # Same-currency, base-currency receipts must balance exactly in document currency too (no FX involved).
+    if ccy == base and not cross:
+        dr, cr = sum(x.debit_minor for x in L), sum(x.credit_minor for x in L)
+        if dr != cr:
+            raise PostingError(f"Journal for receipt {txn.id} does not balance (Dr {dr} / Cr {cr}); refusing to post")
+    bdr, bcr = sum(x.base_debit_minor for x in L), sum(x.base_credit_minor for x in L)
+    plug = bdr - bcr           # >0: debits exceed credits -> we received more base value than AR carried -> gain
+    if plug:
+        limit = max(txn.amount_minor if ccy == base else to_base(txn.amount_minor, txn_rate), 1) * FX_PLUG_MAX_BP // 10000
+        if ccy == base and not cross or abs(plug) > limit:
+            raise PostingError(f"Receipt {txn.id}: realised FX difference {plug / 100:,.2f} {base} is implausible (limit {limit / 100:,.2f}); check exchange rates and the match")
+        fx = PostingLine(voucher_no=vno, txn_id=txn.id, proposal_id=p.id, customer_id=p.customer_id, line_type="fx_gain" if plug > 0 else "fx_loss",
+                         account=_ledger(entity, "fx_gain_loss"), debit_minor=0 if plug > 0 else -plug, credit_minor=plug if plug > 0 else 0, currency=base,
+                         base_debit_minor=0 if plug > 0 else -plug, base_credit_minor=plug if plug > 0 else 0, posting_date=d,
+                         narration=f"Realised FX {'gain' if plug > 0 else 'loss'} {nar}"[:290])
+        fx._inv, fx._party = None, None  # type: ignore[attr-defined]
+        L.append(fx)
+    assert sum(x.base_debit_minor for x in L) == sum(x.base_credit_minor for x in L)
     return L
 
 
 def journal_for_adjustment(db: Session, adj: Adjustment) -> list[PostingLine]:
+    entity = db.get(LegalEntity, adj.entity_id)
     cust = db.get(Customer, adj.customer_id) if adj.customer_id else None
     inv = db.get(Invoice, adj.invoice_id) if adj.invoice_id else None
     vno = f"ADJ-{adj.entity_id}-{adj.posting_date:%y%m%d}-{adj.id}"
+    base = entity.base_currency
+    rate = 1_000_000
+    if adj.currency != base:
+        try:
+            rate = inv.booking_rate_micro if inv else need_rate(db, adj.currency, adj.posting_date, base)
+        except MissingRate as e:
+            raise PostingError(str(e))
     out = []
     for t, acct, dr, cr in (("adj_debit", adj.debit_account, adj.amount_minor, 0), ("adj_credit", adj.credit_account, 0, adj.amount_minor)):
+        b = adj.amount_minor if adj.currency == base else to_base(adj.amount_minor, rate)
         pl = PostingLine(voucher_no=vno, txn_id=adj.txn_id, adjustment_id=adj.id, invoice_id=adj.invoice_id, customer_id=adj.customer_id, line_type=t,
-                         account=acct, debit_minor=dr, credit_minor=cr, currency=adj.currency, posting_date=adj.posting_date, narration=adj.reason[:290])
+                         account=acct, debit_minor=dr, credit_minor=cr, currency=adj.currency, base_debit_minor=b if dr else 0, base_credit_minor=b if cr else 0,
+                         rate_micro=None if adj.currency == base else rate, posting_date=adj.posting_date, narration=adj.reason[:290])
         pl._inv, pl._party = (inv.number if inv else None), (cust.code if cust else None)  # type: ignore[attr-defined]
         out.append(pl)
     return out
@@ -112,7 +155,7 @@ def build_batch(db: Session, entity: LegalEntity, user: User) -> PostingBatch:
     for ln in lines:
         ln.batch_id = batch.id
         db.add(ln)
-    batch.total_minor = sum(x.debit_minor for x in lines)
+    batch.total_minor = sum(x.base_debit_minor for x in lines)
     cfg = {**DEFAULT_ENTITY_CONFIG, **(entity.config or {})}
     if cfg.get("straight_through_release"):
         batch.status = BatchStatus.approved
@@ -136,15 +179,15 @@ def release_batch(db: Session, batch: PostingBatch, user: User) -> None:
     audit.log(db, user.name, "batch.released", "PostingBatch", batch.id, batch.entity_id, {}, user.id)
 
 
-def export_batch(db: Session, batch: PostingBatch, connector: str, user: User) -> tuple[str, bytes, str]:
+def export_batch(db: Session, batch: PostingBatch, connector: str, user: User, transport=None) -> tuple[str, bytes, str]:
     if batch.status not in (BatchStatus.approved, BatchStatus.exported, BatchStatus.failed):
         raise PostingError("Batch must be released before export")
-    c = REGISTRY.get(connector)
+    entity = db.get(LegalEntity, batch.entity_id)
+    c = mapped.resolve(entity, connector, transport)
     if not c:
-        raise PostingError(f"Unknown connector '{connector}'")
+        raise PostingError(f"Unknown or unconfigured connector '{connector}'")
     if c.status != "available":
         raise PostingError(f"Connector '{c.label}' is planned but not implemented yet")
-    entity = db.get(LegalEntity, batch.entity_id)
     _attach_refs(db, batch)
     r = c.render(batch, entity)
     batch.checksum = hashlib.sha256(r.content).hexdigest()
@@ -153,6 +196,14 @@ def export_batch(db: Session, batch: PostingBatch, connector: str, user: User) -
     with open(os.path.join(settings.export_dir, r.filename), "wb") as f:
         f.write(r.content)
     audit.log(db, user.name, "batch.exported", "PostingBatch", batch.id, batch.entity_id, {"connector": connector, "sha256": batch.checksum, "file": r.filename}, user.id)
+    if hasattr(c, "deliver"):   # push-style connector: deliver now, and acknowledge automatically if the ERP returns document numbers
+        try:
+            docs = c.deliver(batch, entity)
+        except Exception as e:
+            fail_batch(db, batch, f"delivery failed: {e}", user)
+            raise PostingError(f"Delivery to ERP failed: {e}")
+        if docs:
+            acknowledge(db, batch, docs, user)
     return r.filename, r.content, r.content_type
 
 

@@ -1,22 +1,33 @@
-// All money on the wire is integer minor units (paise). Never use floats for arithmetic; only for display.
-const inr = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// All money on the wire is integer minor units (paise/cents). Never use floats for arithmetic; only for display.
+const SYM: Record<string, string> = { INR: "₹", USD: "$", EUR: "€", GBP: "£", SGD: "S$", JPY: "¥", AED: "AED ", CHF: "CHF ", AUD: "A$", CAD: "C$" };
+const fmtIN = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtEN = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+export const sym = (ccy: string) => SYM[ccy] ?? `${ccy} `;
 
-export function money(minor: number | null | undefined, opts: { sign?: boolean } = {}): string {
+/** money(minor) -> ₹ with Indian grouping; money(minor, "USD") -> $ with international grouping. */
+export function money(minor: number | null | undefined, ccyOrOpts: string | { sign?: boolean; ccy?: string } = "INR"): string {
   if (minor === null || minor === undefined) return "—";
-  const s = inr.format(Math.abs(minor) / 100);
-  const neg = minor < 0 ? "−" : opts.sign && minor > 0 ? "+" : "";
-  return `${neg}₹${s}`;
+  const o = typeof ccyOrOpts === "string" ? { ccy: ccyOrOpts } : ccyOrOpts;
+  const ccy = o.ccy ?? "INR";
+  const s = (ccy === "INR" ? fmtIN : fmtEN).format(Math.abs(minor) / 100);
+  const neg = minor < 0 ? "−" : o.sign && minor > 0 ? "+" : "";
+  return `${neg}${sym(ccy)}${s}`;
 }
 
-/** Compact Indian units: 1.2 Cr, 34.5 L, 12.3 K */
-export function compact(minor: number | null | undefined): string {
+/** Compact units. INR: K / L / Cr. Other currencies: K / M / B. */
+export function compact(minor: number | null | undefined, ccy = "INR"): string {
   if (minor === null || minor === undefined) return "—";
-  const v = Math.abs(minor) / 100;
-  const sign = minor < 0 ? "−" : "";
-  if (v >= 1e7) return `${sign}₹${(v / 1e7).toFixed(2)} Cr`;
-  if (v >= 1e5) return `${sign}₹${(v / 1e5).toFixed(2)} L`;
-  if (v >= 1e3) return `${sign}₹${(v / 1e3).toFixed(1)} K`;
-  return `${sign}₹${v.toFixed(0)}`;
+  const v = Math.abs(minor) / 100, sg = minor < 0 ? "−" : "", y = sym(ccy);
+  if (ccy === "INR") {
+    if (v >= 1e7) return `${sg}${y}${(v / 1e7).toFixed(2)} Cr`;
+    if (v >= 1e5) return `${sg}${y}${(v / 1e5).toFixed(2)} L`;
+    if (v >= 1e3) return `${sg}${y}${(v / 1e3).toFixed(1)} K`;
+    return `${sg}${y}${v.toFixed(0)}`;
+  }
+  if (v >= 1e9) return `${sg}${y}${(v / 1e9).toFixed(2)} B`;
+  if (v >= 1e6) return `${sg}${y}${(v / 1e6).toFixed(2)} M`;
+  if (v >= 1e3) return `${sg}${y}${(v / 1e3).toFixed(1)} K`;
+  return `${sg}${y}${v.toFixed(0)}`;
 }
 
 export const pct = (x: number | null | undefined, d = 0) => (x === null || x === undefined ? "—" : `${(x * 100).toFixed(d)}%`);
@@ -51,3 +62,5 @@ export function toMinor(rupees: string): number {
 const LABELS: Record<string, string> = { non_ar_credit: "Non-AR credit", short_pay_tds: "Short-pay (TDS)", on_account: "On account", pending_review: "Pending review" };
 export const label = (s: string) => LABELS[s] ?? title(s);
 export const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+export const rate6 = (micro: number | null | undefined) => (micro ? (micro / 1e6).toFixed(4) : "—");

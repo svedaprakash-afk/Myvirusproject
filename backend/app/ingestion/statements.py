@@ -37,9 +37,14 @@ _DATE_FORMATS = ["%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d-%b-%Y", "%d
                  "%d.%m.%Y", "%d/%b/%Y", "%m/%d/%Y"]
 
 
-def parse_date(raw) -> date | None:
+def parse_date(raw, fmt: str | None = None) -> date | None:
     if raw is None or raw == "":
         return None
+    if fmt and isinstance(raw, str):
+        try:
+            return datetime.strptime(raw.strip(), fmt).date()
+        except ValueError:
+            pass
     if isinstance(raw, datetime):
         return raw.date()
     if isinstance(raw, date):
@@ -74,22 +79,25 @@ def _norm_h(h) -> str:
     return re.sub(r"\s+", " ", str(h or "").strip().lower())
 
 
-def _map_headers(row: list) -> dict[str, int] | None:
+def _map_headers(row: list, custom: dict | None = None) -> dict[str, int] | None:
     idx: dict[str, int] = {}
+    custom = {k: _norm_h(v) for k, v in (custom or {}).items() if v}
     for i, h in enumerate(row):
         nh = _norm_h(h)
         for canon, syns in _SYN.items():
-            if nh in syns and canon not in idx:
+            if canon not in idx and (nh == custom.get(canon) or (canon not in custom and nh in syns)):
                 idx[canon] = i
     if "date" in idx and "narration" in idx and (("debit" in idx and "credit" in idx) or "amount" in idx):
         return idx
     return None
 
 
-def _rows_to_txns(rows: list[list]) -> list[RawTxn]:
+def _rows_to_txns(rows: list[list], profile: dict | None = None) -> list[RawTxn]:
+    profile = profile or {}
     hdr_i, idx = None, None
-    for i, r in enumerate(rows[:60]):
-        m = _map_headers(r)
+    rows = rows[int(profile.get("skip_rows") or 0):]
+    for i, r in enumerate(rows[:80]):
+        m = _map_headers(r, profile.get("columns"))
         if m:
             hdr_i, idx = i, m
             break
@@ -101,7 +109,7 @@ def _rows_to_txns(rows: list[list]) -> list[RawTxn]:
             i = idx.get(k)
             return r[i] if i is not None and i < len(r) else None
 
-        d = parse_date(cell("date"))
+        d = parse_date(cell("date"), profile.get("date_format"))
         if d is None:
             continue  # footers / blank / opening-balance rows
         debit = parse_amount(_s(cell("debit"))) if "debit" in idx else None
@@ -121,8 +129,12 @@ def _rows_to_txns(rows: list[list]) -> list[RawTxn]:
         if not amt:
             continue
         out.append(RawTxn(
-            txn_date=d, value_date=parse_date(cell("value_date")), amount_minor=amt, direction=direction,
-            narration=re.sub(r"\s+", " ", _s(cell("narration"))).strip(), bank_ref=_s(cell("ref")) or None,
+            txn_date=d, value_date=parse_date(cell("value_date"), profile.get("date_format")), amount_minor=amt,
+            direction=(("debit" if direction == "credit" else "credit") if profile.get("invert_direction") else direction),
+            currency=(profile.get("currency") or "INR").upper(),
+            narration=re.sub(r"\s+", " ", " ".join(_s(r[idx[k]]) for k in ["narration"] if k in idx and idx[k] < len(r)) + " " +
+                             " ".join(_s(r[i]) for i in (profile.get("extra_narration_columns") or []) if i < len(r))).strip(),
+            bank_ref=_s(cell("ref")) or None,
             balance_minor=parse_amount(_s(cell("balance"))) if "balance" in idx else None,
             extra={"row": n},
         ))
@@ -133,23 +145,30 @@ def _s(v) -> str:
     return "" if v is None else str(v).strip()
 
 
-def parse_csv(data: bytes) -> list[RawTxn]:
-    text = data.decode("utf-8-sig", errors="replace")
+def parse_csv(data: bytes, profile: dict | None = None) -> list[RawTxn]:
+    profile = profile or {}
     try:
-        dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
-    except csv.Error:
-        dialect = csv.excel
-    rows = [list(r) for r in csv.reader(io.StringIO(text), dialect)]
-    return _rows_to_txns(rows)
+        text = data.decode(profile.get("encoding") or "utf-8-sig", errors="replace")
+    except LookupError:
+        raise StatementError(f"Unknown encoding '{profile.get('encoding')}'")
+    if profile.get("delimiter"):
+        rows = [list(r) for r in csv.reader(io.StringIO(text), delimiter=profile["delimiter"])]
+    else:
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+        except csv.Error:
+            dialect = csv.excel
+        rows = [list(r) for r in csv.reader(io.StringIO(text), dialect)]
+    return _rows_to_txns(rows, profile)
 
 
-def parse_xlsx(data: bytes) -> list[RawTxn]:
+def parse_xlsx(data: bytes, profile: dict | None = None) -> list[RawTxn]:
     from openpyxl import load_workbook
 
     wb = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
     ws = wb.active
     rows = [[c for c in r] for r in ws.iter_rows(values_only=True)]
-    return _rows_to_txns(rows)
+    return _rows_to_txns(rows, profile)
 
 
 # ------------------------------------------------------------------ MT940
@@ -265,13 +284,50 @@ def parse_gateway_csv(data: bytes) -> list[RawTxn]:
     return out
 
 
-def detect_and_parse(filename: str, data: bytes) -> tuple[str, list[RawTxn]]:
+def detect_and_parse(filename: str, data: bytes, profile: dict | None = None) -> tuple[str, list[RawTxn]]:
     name = (filename or "").lower()
     head = data[:4000].decode("utf-8", errors="ignore")
+    fmt = (profile or {}).get("format", "auto")
+    if fmt == "csv":
+        return "csv", parse_csv(data, profile)
+    if fmt == "xlsx" or (fmt == "auto" and name.endswith((".xlsx", ".xlsm"))):
+        return "xlsx", parse_xlsx(data, profile)
+    if fmt == "mt940":
+        return "mt940", parse_mt940(data)
+    if fmt == "camt053":
+        return "camt053", parse_camt053(data)
     if name.endswith((".xlsx", ".xlsm")):
-        return "xlsx", parse_xlsx(data)
+        return "xlsx", parse_xlsx(data, profile)
     if name.endswith(".xml") or head.lstrip().startswith("<?xml") or "<Document" in head:
         return "camt053", parse_camt053(data)
     if ":61:" in head or ":20:" in head and ":25:" in head:
         return "mt940", parse_mt940(data)
-    return "csv", parse_csv(data)
+    return "csv", parse_csv(data, profile)
+
+
+def suggest_profile(data: bytes, filename: str = "") -> dict:
+    """Help onboard an unknown bank: find the header row, report which canonical columns were recognised and which headers were not."""
+    fmt, _ = ("xlsx", None) if filename.lower().endswith(("xlsx", "xlsm")) else ("csv", None)
+    try:
+        if fmt == "xlsx":
+            from openpyxl import load_workbook
+
+            rows = [list(r) for r in load_workbook(io.BytesIO(data), data_only=True, read_only=True).active.iter_rows(values_only=True)]
+        else:
+            text = data.decode("utf-8-sig", errors="replace")
+            try:
+                dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+            except csv.Error:
+                dialect = csv.excel
+            rows = [list(r) for r in csv.reader(io.StringIO(text), dialect)]
+    except Exception as e:
+        raise StatementError(f"Could not read file: {e}")
+    for i, r in enumerate(rows[:80]):
+        m = _map_headers(r)
+        if m:
+            names = {k: str(r[v]) for k, v in m.items()}
+            unknown = [str(h) for j, h in enumerate(r) if j not in m.values() and str(h or "").strip()]
+            return {"header_row": i, "recognised": names, "unrecognised_headers": unknown, "profile": {"format": fmt, "skip_rows": 0, "columns": names}}
+    first = [str(h) for h in (rows[0] if rows else [])]
+    return {"header_row": None, "recognised": {}, "unrecognised_headers": first, "profile": None,
+            "hint": "No row contains a date, a narration and amount/debit/credit columns. Map them manually in the profile's `columns`."}

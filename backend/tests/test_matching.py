@@ -390,3 +390,17 @@ def test_subset_search_finds_exact_and_respects_limits():
 def test_subset_search_tolerance_window():
     hits = find_subsets([(1, 1000), (2, 2000)], 2998, 5)
     assert hits and sorted(hits[0][0]) == [1, 2]
+
+
+def test_invoice_ranges_in_narration_expand_to_each_invoice(w):
+    from app.matching.references import expand_ranges
+
+    assert expand_ranges("INV 1001-1004 PAID") == {"1001", "1002", "1003", "1004"}
+    assert expand_ranges("1001 TO 1003") == {"1001", "1002", "1003"}
+    assert expand_ranges("01-07-2026") == set() and expand_ranges("1001-9999") == set() and expand_ranges("2026-27") == set()
+    c = acme(w)
+    invs = [w.invoice(c, f"INV/26-27/{n}", 10_000_00 + n * 100) for n in (1001, 1002, 1003)]
+    t = w.credit(sum(i.total_minor for i in invs), "NEFT-HDFCN26274000300-ACME INDUSTRIES PVT LTD-INV 1001-1003")
+    w.run(t)
+    p = proposal(w, t)
+    assert sorted(a.invoice.number for a in p.allocations) == sorted(i.number for i in invs)

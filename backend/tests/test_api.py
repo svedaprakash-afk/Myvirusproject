@@ -20,7 +20,7 @@ def H(client, who):
 def test_everything_requires_authentication(client, seeded):
     for path in ["/api/v1/transactions?entity_id=1", "/api/v1/proposals?entity_id=1", "/api/v1/analytics/summary?entity_id=1", "/api/v1/audit"]:
         assert client.get(path).status_code == 401
-    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/health").json()["status"] == "ok"
 
 
 def test_bad_credentials_rejected_and_audited(client, seeded):
@@ -71,7 +71,7 @@ def test_end_to_end_review_to_erp_ack(client, seeded):
     b = client.post("/api/v1/posting/batches", json={"entity_id": e}, headers=mgr)
     assert b.status_code == 200, b.text
     bid = b.json()["id"]
-    assert all(sum(l["debit_minor"] for l in b.json()["lines"] if l["voucher_no"] == v) == sum(l["credit_minor"] for l in b.json()["lines"] if l["voucher_no"] == v)
+    assert all(sum(l["base_debit_minor"] for l in b.json()["lines"] if l["voucher_no"] == v) == sum(l["base_credit_minor"] for l in b.json()["lines"] if l["voucher_no"] == v)
                for v in {l["voucher_no"] for l in b.json()["lines"]})
     assert client.post(f"/api/v1/posting/batches/{bid}/release", headers=mgr).status_code == 403   # manager lacks release permission
     assert client.post(f"/api/v1/posting/batches/{bid}/export", json={"connector": "generic_csv"}, headers=treas).status_code == 409  # not released yet
@@ -150,3 +150,30 @@ def test_config_validation_and_audit(client, seeded):
 def test_connectors_are_honest_about_what_exists(client, seeded):
     c = {x["name"]: x["status"] for x in client.get("/api/v1/connectors", headers=H(client, "analyst")).json()}
     assert c["generic_csv"] == "available" and c["tally_prime"] == "planned"
+
+
+def test_dashboard_converts_foreign_currency_and_flags_missing_rates(client, seeded, db):
+    from sqlalchemy import delete
+
+    from app.models import ExchangeRate
+
+    e, h = seeded, H(client, "treasury")
+    s = client.get(f"/api/v1/analytics/summary?entity_id={e}", headers=h).json()
+    assert s["base_currency"] == "INR" and s["missing_rates"] == []
+    fe = {x["currency"]: x for x in s["foreign_exposure"]}
+    assert set(fe) == {"USD", "EUR"} and fe["USD"]["base_equivalent_minor"] > fe["USD"]["open_minor"] * 70   # ~₹83 per $
+    with_fx = s["receivables"]["open_minor"]
+    db.execute(delete(ExchangeRate).where(ExchangeRate.currency == "EUR"))
+    db.commit()
+    s2 = client.get(f"/api/v1/analytics/summary?entity_id={e}", headers=h).json()
+    assert s2["missing_rates"] == ["EUR"] and s2["receivables"]["open_minor"] < with_fx, "unconvertible amounts are excluded AND reported, never silently added at 1:1"
+
+
+def test_fx_rate_api_validates_and_is_role_gated(client, seeded):
+    body = [{"currency": "usd", "rate_date": "2026-10-15", "rate": "83.5000"}]
+    assert client.post("/api/v1/fx-rates", json=body, headers=H(client, "analyst")).status_code == 403
+    assert client.post("/api/v1/fx-rates", json=body, headers=H(client, "treasury")).json() == {"upserted": 1}
+    assert client.post("/api/v1/fx-rates", json=[{"currency": "USD", "rate_date": "2026-10-15", "rate": "0.0001"}], headers=H(client, "treasury")).status_code == 422
+    assert client.post("/api/v1/fx-rates", json=[{"currency": "USD", "rate_date": "2026-10-15", "rate": "abc"}], headers=H(client, "treasury")).status_code == 422
+    r = client.get("/api/v1/fx-rates?currency=USD&limit=3", headers=H(client, "analyst")).json()
+    assert r[0]["rate_date"] == "2026-10-15" or any(x["rate"] == 83.5 for x in r)

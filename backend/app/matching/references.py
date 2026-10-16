@@ -29,6 +29,19 @@ def serial_of(number: str) -> str | None:
     return m.group(1).lstrip("0") or None if m else None
 
 
+_RANGE = re.compile(r"(?<![\d/])(\d{3,9})\s*(?:-|–|TO|THRU|THROUGH)\s*(\d{3,9})(?![\d/])")
+
+
+def expand_ranges(text: str, max_span: int = 25) -> set[str]:
+    """'INV 1001-1004' / '1001 TO 1004' -> {'1001','1002','1003','1004'} (leading zeros stripped, like serial_of)."""
+    out: set[str] = set()
+    for a, b in _RANGE.findall(text):
+        lo, hi = int(a), int(b)
+        if 0 < hi - lo <= max_span and len(a) == len(b):
+            out |= {str(n) for n in range(lo, hi + 1)}
+    return out
+
+
 def find_references(ctx: Ctx, text: str, candidate_customers: list[int] | None = None) -> dict[int, str]:
     """invoice_id -> hit kind ('exact' | 'irn' | 'po' | 'serial').
 
@@ -59,6 +72,7 @@ def find_references(ctx: Ctx, text: str, candidate_customers: list[int] | None =
 
     if candidate_customers:
         digit_toks = {t.lstrip("0") for t in toks if t.isdigit() and 3 <= len(t) <= 9}
+        digit_toks |= expand_ranges(up)
         for cid in candidate_customers:
             by_serial: dict[str, list[Invoice]] = {}
             for inv in ctx.open_by_cust.get(cid, ()):

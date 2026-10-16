@@ -12,10 +12,16 @@ services:
       APP_ENV: prod
       ALLOW_DEMO: "0"
       EXPORT_DIR: /data/exports
-    volumes: [exports:/data/exports]
+      FEED_ROOT: /data/feeds
+      # Data residency: the API refuses to start unless DEPLOY_REGION is an Indian region, and blocks every outbound host
+      # that is not listed here (bank APIs, ERP webhook, IMAP, LLM). Add only in-region endpoints.
+      DATA_RESIDENCY_STRICT: "1"
+      DEPLOY_REGION: ${DEPLOY_REGION:?set DEPLOY_REGION, e.g. ap-south-1}
+      ALLOWED_EGRESS_HOSTS: ${ALLOWED_EGRESS_HOSTS:-}
+    volumes: [exports:/data/exports, feeds:/data/feeds]
     depends_on: [db]
   web:
     build: ./frontend
     ports: ["8080:80"]
     depends_on: [api]
-volumes: { pgdata: {}, exports: {} }
+volumes: { pgdata: {}, exports: {}, feeds: {} }

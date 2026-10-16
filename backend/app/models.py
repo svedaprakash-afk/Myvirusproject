@@ -128,6 +128,9 @@ DEFAULT_ENTITY_CONFIG = {
     "auto_approve_max_minor": 50_00_00_000,  # ₹50 lakh: above this a human must always look
     "auto_approve_enabled": True,        # False = suggest-only mode (recommended for the first weeks of a rollout)
     "auto_approve_amount_only": False,   # allow auto-approval on exact amount without any invoice reference
+    "auto_approve_cross_currency": False,  # auto-approve when invoice currency differs from the receipt's
+    "fx_spread_bp": 150,                   # max deviation between bank-credited INR and invoice value at the rate table (1.5%)
+    "foreign_bank_charge_max_minor": 6000, # intermediary/correspondent charges deducted from foreign receipts (e.g. $60)
     "straight_through_release": False,  # auto-release posting batches without a human
     "sla_hours": 48,
     "max_subset_size": 8,
@@ -140,6 +143,7 @@ DEFAULT_LEDGERS = {
     "write_off": "5900-WRITEOFF",
     "unapplied_cash": "2150-UNAPPLIED",
     "intercompany": "1500-INTERCO",
+    "fx_gain_loss": "4950-FX-GAINLOSS",
 }
 
 
@@ -154,6 +158,10 @@ class BankAccount(Base):
     ledger_code: Mapped[str] = mapped_column(String(50), default="1100-BANK")
     van_prefix: Mapped[str | None] = mapped_column(String(20))  # virtual account prefix
     is_gateway: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Bank-agnostic onboarding: how to read this bank's files (profile) and how to fetch them (feed). Secrets are never stored,
+    # only the NAMES of environment variables that hold them.
+    profile: Mapped[dict] = mapped_column(JSON, default=dict)
+    feed: Mapped[dict] = mapped_column(JSON, default=dict)
     entity: Mapped[LegalEntity] = relationship(back_populates="bank_accounts")
     __table_args__ = (UniqueConstraint("entity_id", "account_no"),)
 
@@ -226,6 +234,7 @@ class Invoice(Base):
     po_ref: Mapped[str | None] = mapped_column(String(60))
     disputed: Mapped[bool] = mapped_column(Boolean, default=False)
     erp_ref: Mapped[str | None] = mapped_column(String(80))
+    booking_rate_micro: Mapped[int] = mapped_column(BigInteger, default=1_000_000)  # base currency per 1 unit of invoice currency, x1e6
     customer: Mapped[Customer] = relationship()
     __table_args__ = (UniqueConstraint("entity_id", "number"), Index("ix_inv_open", "entity_id", "customer_id", "open_minor"))
 
@@ -264,6 +273,9 @@ class PaymentTransaction(Base):
     bank_ref: Mapped[str | None] = mapped_column(String(60))
     balance_minor: Mapped[int | None] = mapped_column(BigInteger)
     extra: Mapped[dict] = mapped_column(JSON, default=dict)
+    fx_ccy: Mapped[str | None] = mapped_column(String(3))            # foreign currency the payer actually sent (inward remittance)
+    fx_minor: Mapped[int | None] = mapped_column(BigInteger)
+    fx_rate_micro: Mapped[int | None] = mapped_column(BigInteger)    # base per 1 unit of txn.currency when the bank states it
     dedupe_key: Mapped[str] = mapped_column(String(64), unique=True)
     status: Mapped[TxnStatus] = mapped_column(Enum(TxnStatus), default=TxnStatus.new, index=True)
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
@@ -290,6 +302,9 @@ class RemittanceDocument(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     extracted: Mapped[dict] = mapped_column(JSON, default=dict)
     extractor: Mapped[str] = mapped_column(String(30), default="rules")
+    source_ref: Mapped[str | None] = mapped_column(String(200), index=True)   # e.g. email Message-ID, for idempotent polling
+    sender: Mapped[str | None] = mapped_column(String(250))
+    auth_result: Mapped[str | None] = mapped_column(String(60))
     customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"))
     linked_txn_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -315,6 +330,9 @@ class MatchProposal(Base):
     fee_minor: Mapped[int] = mapped_column(BigInteger, default=0)
     unapplied_minor: Mapped[int] = mapped_column(BigInteger, default=0)   # overpay / on-account
     short_minor: Mapped[int] = mapped_column(BigInteger, default=0)       # unexplained shortfall
+    settle_currency: Mapped[str | None] = mapped_column(String(3))        # invoice currency when it differs from the receipt's
+    settle_rate_micro: Mapped[int | None] = mapped_column(BigInteger)     # implied base per unit of settle_currency
+    writeoff_kind: Mapped[str] = mapped_column(String(20), default="tolerance")  # tolerance | bank_charge
     created_by: Mapped[str] = mapped_column(String(60), default="engine")
     auto: Mapped[bool] = mapped_column(Boolean, default=False)   # applied straight-through, no human decision
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
@@ -403,6 +421,11 @@ class ExceptionCase(Base):
     resolution: Mapped[str | None] = mapped_column(String(60))
     notes: Mapped[list["ExceptionNote"]] = relationship(cascade="all, delete-orphan", order_by="ExceptionNote.id")
     customer: Mapped[Customer | None] = relationship()
+    txn: Mapped["PaymentTransaction | None"] = relationship(foreign_keys=[txn_id])
+
+    @property
+    def txn_currency(self) -> str | None:
+        return self.txn.currency if self.txn else None
 
 
 class ExceptionNote(Base):
@@ -468,6 +491,17 @@ class Adjustment(Base):
     posted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class ExchangeRate(Base):
+    """Daily rates, base currency per 1 unit of `currency`, x1e6 (e.g. USD 83.4521 INR -> 83452100)."""
+    __tablename__ = "exchange_rates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    currency: Mapped[str] = mapped_column(String(3), index=True)
+    rate_date: Mapped[date] = mapped_column(Date, index=True)
+    rate_micro: Mapped[int] = mapped_column(BigInteger)
+    source: Mapped[str] = mapped_column(String(40), default="manual")
+    __table_args__ = (UniqueConstraint("currency", "rate_date"),)
+
+
 # ---------------------------------------------------------------- tax
 class TdsEntry(Base):
     """TDS suffered on receipts: drives the 'awaiting Form 16A / 26AS' worklist."""
@@ -524,6 +558,9 @@ class PostingLine(Base):
     debit_minor: Mapped[int] = mapped_column(BigInteger, default=0)
     credit_minor: Mapped[int] = mapped_column(BigInteger, default=0)
     currency: Mapped[str] = mapped_column(String(3), default="INR")
+    base_debit_minor: Mapped[int] = mapped_column(BigInteger, default=0)    # same line in the entity's base currency
+    base_credit_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    rate_micro: Mapped[int | None] = mapped_column(BigInteger)
     posting_date: Mapped[date] = mapped_column(Date)
     narration: Mapped[str] = mapped_column(String(300), default="")
     erp_doc_no: Mapped[str | None] = mapped_column(String(80))

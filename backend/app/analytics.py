@@ -13,19 +13,44 @@ from .models import (ApprovalRequest, ApprovalStatus, AuditLog, BankAccount, Cus
 OPEN_EXC = [ExceptionStatus.open, ExceptionStatus.in_progress, ExceptionStatus.pending_approval]
 
 
+class Conv:
+    """Convert any currency to the entity's base at the latest known rate; remember what could not be converted."""
+
+    def __init__(self, db: Session, entity_id: int):
+        from .fx import rate_on
+        from .models import LegalEntity
+
+        self.db, self.base = db, db.get(LegalEntity, entity_id).base_currency
+        self._rate_on, self.missing, self._cache = rate_on, set(), {}
+
+    def __call__(self, amount: int, ccy: str) -> int:
+        if ccy == self.base:
+            return amount
+        if ccy not in self._cache:
+            self._cache[ccy] = self._rate_on(self.db, ccy, date.today(), self.base)
+        r = self._cache[ccy]
+        if r is None:
+            self.missing.add(ccy)
+            return 0
+        from .fx import to_base
+
+        return to_base(amount, r)
+
+
 def _bucket(days: int) -> str:
     return "0-1d" if days <= 1 else "2-3d" if days <= 3 else "4-7d" if days <= 7 else "8-30d" if days <= 30 else "30d+"
 
 
 def summary(db: Session, entity_id: int, today: date | None = None) -> dict:
     today = today or date.today()
+    cv = Conv(db, entity_id)
     unapplied_rows = db.execute(select(PaymentTransaction).where(
         PaymentTransaction.entity_id == entity_id, PaymentTransaction.direction == "credit",
         PaymentTransaction.status.in_([TxnStatus.new, TxnStatus.review, TxnStatus.exception, TxnStatus.partially_matched]))).scalars().all()
     ageing = defaultdict(lambda: {"count": 0, "amount_minor": 0})
     by_account = defaultdict(int)
     for t in unapplied_rows:
-        amt = t.receivable_minor
+        amt = cv(t.receivable_minor, t.currency)
         b = _bucket((today - t.txn_date).days)
         ageing[b]["count"] += 1
         ageing[b]["amount_minor"] += amt
@@ -41,16 +66,20 @@ def summary(db: Session, entity_id: int, today: date | None = None) -> dict:
     total_credits = db.scalar(select(func.count()).select_from(PaymentTransaction).where(
         PaymentTransaction.entity_id == entity_id, PaymentTransaction.direction == "credit", PaymentTransaction.created_at >= since)) or 0
 
-    exc = db.execute(select(ExceptionCase.type, func.count(), func.coalesce(func.sum(ExceptionCase.amount_minor), 0)).where(
-        ExceptionCase.entity_id == entity_id, ExceptionCase.status.in_(OPEN_EXC)).group_by(ExceptionCase.type)).all()
+    exc_acc: dict = defaultdict(lambda: [0, 0])
+    for x, tccy in db.execute(select(ExceptionCase, PaymentTransaction.currency).outerjoin(PaymentTransaction, ExceptionCase.txn_id == PaymentTransaction.id).where(
+            ExceptionCase.entity_id == entity_id, ExceptionCase.status.in_(OPEN_EXC))).all():
+        exc_acc[x.type][0] += 1
+        exc_acc[x.type][1] += cv(x.amount_minor, tccy or cv.base)
+    exc = [(t, c, a) for t, (c, a) in exc_acc.items()]
     overdue_exc = db.scalar(select(func.count()).select_from(ExceptionCase).where(
         ExceptionCase.entity_id == entity_id, ExceptionCase.status.in_(OPEN_EXC), ExceptionCase.due_at < __import__("datetime").datetime.utcnow())) or 0
 
     open_ar = db.execute(select(Invoice).where(Invoice.entity_id == entity_id, Invoice.open_minor != 0)).scalars().all()
-    ar_total = sum(i.open_minor for i in open_ar)
-    overdue = sum(i.open_minor for i in open_ar if i.due_date < today)
-    sales90 = db.scalar(select(func.coalesce(func.sum(Invoice.total_minor), 0)).where(
-        Invoice.entity_id == entity_id, Invoice.invoice_date >= today - timedelta(days=90), Invoice.doc_type == "invoice")) or 0
+    ar_total = sum(cv(i.open_minor, i.currency) for i in open_ar)
+    overdue = sum(cv(i.open_minor, i.currency) for i in open_ar if i.due_date < today)
+    sales90 = sum(cv(i.total_minor, i.currency) for i in db.execute(select(Invoice).where(
+        Invoice.entity_id == entity_id, Invoice.invoice_date >= today - timedelta(days=90), Invoice.doc_type == "invoice")).scalars())
     dso = round(ar_total / sales90 * 90, 1) if sales90 > 0 else None
 
     tds_wait = db.scalar(select(func.coalesce(func.sum(TdsEntry.amount_minor), 0)).where(
@@ -72,17 +101,29 @@ def summary(db: Session, entity_id: int, today: date | None = None) -> dict:
         "queues": {"review": review, "exceptions": sum(c for _, c, _ in exc), "exceptions_overdue_sla": overdue_exc, "approvals_pending": pending_appr},
         "exceptions_by_type": [{"type": t.value, "count": c, "amount_minor": int(a)} for t, c, a in exc],
         "receivables": {"open_minor": ar_total, "overdue_minor": overdue, "dso_days": dso,
-                        "ageing": _ar_ageing(open_ar, today)},
+                        "ageing": _ar_ageing(open_ar, today, cv)},
         "tds": {"awaiting_certificate_minor": int(tds_wait)},
+        "base_currency": cv.base,
+        "missing_rates": sorted(cv.missing),   # currencies present in the data with no rate: their amounts are excluded from totals
+        "foreign_exposure": _exposure(open_ar, cv),
     }
 
 
-def _ar_ageing(invs: list[Invoice], today: date) -> list[dict]:
+def _exposure(invs: list[Invoice], cv) -> list[dict]:
+    d: dict = defaultdict(lambda: [0, 0])
+    for i in invs:
+        if i.currency != cv.base:
+            d[i.currency][0] += i.open_minor
+            d[i.currency][1] += cv(i.open_minor, i.currency)
+    return [{"currency": k, "open_minor": v[0], "base_equivalent_minor": v[1]} for k, v in sorted(d.items())]
+
+
+def _ar_ageing(invs: list[Invoice], today: date, cv) -> list[dict]:
     b = {"Not due": 0, "1-30": 0, "31-60": 0, "61-90": 0, "90+": 0}
     for i in invs:
         d = (today - i.due_date).days
         k = "Not due" if d <= 0 else "1-30" if d <= 30 else "31-60" if d <= 60 else "61-90" if d <= 90 else "90+"
-        b[k] += i.open_minor
+        b[k] += cv(i.open_minor, i.currency)
     return [{"bucket": k, "amount_minor": v} for k, v in b.items()]
 
 
@@ -114,13 +155,14 @@ def forecast(db: Session, entity_id: int, weeks: int = 8, today: date | None = N
     lateness (from accepted matches). It is a transparent heuristic, not a statistical forecast, and says so."""
     today = today or date.today()
     prof = {p.customer_id: p for p in db.execute(select(CustomerProfile)).scalars()}
+    cv = Conv(db, entity_id)
     buckets = [0] * (weeks + 1)
     for i in db.execute(select(Invoice).where(Invoice.entity_id == entity_id, Invoice.open_minor > 0, Invoice.disputed.is_(False))).scalars():
         p = prof.get(i.customer_id)
         late = int(round(p.avg_days_late)) if p and p.payments >= 3 else 0
         exp = max(i.due_date + timedelta(days=max(late, 0)), today)
         w = min((exp - today).days // 7, weeks)
-        buckets[w] += i.open_minor
+        buckets[w] += cv(i.open_minor, i.currency)
     return {"method": "due date + customer's historical average lateness (customers with <3 observed payments use due date)",
             "weeks": [{"week_start": (today + timedelta(days=7 * k)).isoformat(), "amount_minor": v, "overflow": k == weeks} for k, v in enumerate(buckets)]}
 

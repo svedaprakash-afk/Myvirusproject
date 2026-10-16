@@ -15,6 +15,7 @@ import Tds from "./pages/Tds";
 import Import from "./pages/Import";
 import Audit from "./pages/Audit";
 import Settings from "./pages/Settings";
+import Connections from "./pages/Connections";
 
 function Shell() {
   const { user, entity, entities, setEntityId, counts } = useApp();
@@ -42,6 +43,7 @@ function Shell() {
           <div className="group">Data</div>
           {item("/customers", "Customers & invoices")}
           {item("/import", "Import")}
+          {item("/connections", "Connections")}
           <div className="group">Governance</div>
           {item("/audit", "Audit trail")}
           {item("/settings", "Settings & AI")}
@@ -72,6 +74,7 @@ function Shell() {
             <Route path="/customers" element={<Customers />} />
             <Route path="/import" element={<Import />} />
             <Route path="/audit" element={<Audit />} />
+            <Route path="/connections" element={<Connections />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

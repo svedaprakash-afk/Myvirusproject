@@ -259,6 +259,9 @@ def manual_match(db: Session, user: User, txn: PaymentTransaction, allocations: 
         inv = db.get(Invoice, a["invoice_id"])
         if not inv or inv.entity_id != entity.id:
             raise WorkflowError("Unknown invoice")
+        if inv.currency != txn.currency:
+            raise WorkflowError(f"{inv.number} is in {inv.currency} but the receipt is in {txn.currency}. Manual cross-currency allocation is not supported; "
+                                f"let the engine propose it (it needs the exchange rate) or add the rate under FX rates")
         cust_ids.add(inv.customer_id)
         cleared = a["applied_minor"] + a.get("tds_minor", 0) + a.get("writeoff_minor", 0)
         if (inv.open_minor > 0 and not 0 < cleared <= inv.open_minor) or (inv.open_minor < 0 and not inv.open_minor <= cleared < 0):

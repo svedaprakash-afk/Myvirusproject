@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Proposal, type Txn } from "../api";
 import { useApp } from "../ctx";
 import { useAction, useAsync } from "../hooks";
-import { date, money, pct, title } from "../format";
+import { date, money, pct, rate6, title } from "../format";
 import { Chip, ConfBar, Empty, ErrorBox, Loading, Modal, PageHead, Field, StatusChip } from "../components/ui";
 import ManualMatch from "../components/ManualMatch";
 
@@ -56,7 +56,7 @@ export default function Review() {
             {items.map((p) => (
               <div key={p.id} className={`list-item ${cur?.id === p.id ? "sel" : ""}`} role="option" aria-selected={cur?.id === p.id} onClick={() => setSel(p.id)}>
                 <div className="row between">
-                  <span className="row">{writable && safeToBulk(p) && <input type="checkbox" aria-label="Select for bulk accept" style={{ width: "auto" }} checked={checked.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(checked); e.target.checked ? s.add(p.id) : s.delete(p.id); setChecked(s); }} />}<b className="num">{money(p.txn?.receivable_minor)}</b></span>
+                  <span className="row">{writable && safeToBulk(p) && <input type="checkbox" aria-label="Select for bulk accept" style={{ width: "auto" }} checked={checked.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={(e) => { const s = new Set(checked); e.target.checked ? s.add(p.id) : s.delete(p.id); setChecked(s); }} />}<b className="num">{money(p.txn?.receivable_minor, p.txn?.currency)}</b></span>
                   <span className="muted">{pct(p.confidence)}</span>
                 </div>
                 <div style={{ fontSize: 13 }}>{p.customer?.name ?? <i className="muted">customer unknown</i>}</div>
@@ -83,8 +83,8 @@ function Detail({ p, writable, busy, onAccept, onReject, onManual }: { p: Propos
     <div className="grid">
       <div className="card">
         <div className="row between wrap">
-          <div><div style={{ fontSize: 24, fontWeight: 700 }} className="num">{money(t.receivable_minor)}</div>
-            <div className="muted">{date(t.txn_date)} · <Chip tone="info">{t.channel}</Chip> {t.fee_minor > 0 && <Chip title="Gateway fee deducted before settlement">fee {money(t.fee_minor)}</Chip>} · {t.bank}</div></div>
+          <div><div style={{ fontSize: 24, fontWeight: 700 }} className="num">{money(t.receivable_minor, t.currency)}</div>
+            <div className="muted">{date(t.txn_date)} · <Chip tone="info">{t.channel}</Chip> {t.fee_minor > 0 && <Chip title="Gateway fee deducted before settlement">fee {money(t.fee_minor, t.currency)}</Chip>} · {t.bank}</div></div>
           <div style={{ textAlign: "right" }}><div className="muted" style={{ fontSize: 12 }}>Confidence</div><b style={{ fontSize: 20 }}>{pct(p.confidence)}</b><div style={{ width: 120 }}><ConfBar value={p.confidence} /></div></div>
         </div>
         <div className="pre mt">{t.narration}</div>
@@ -99,15 +99,17 @@ function Detail({ p, writable, busy, onAccept, onReject, onManual }: { p: Propos
         <h2>Proposed application</h2>
         <div className="note good" style={{ marginTop: 0 }}>{ex.summary}</div>
         {p.allocations.length ? (
-          <table><thead><tr><th>Invoice</th><th>Due</th><th className="num">Open</th><th className="num">Cash applied</th><th className="num">TDS</th><th className="num">Write-off</th><th>Evidence</th></tr></thead>
+          <table><thead><tr><th>Invoice</th><th>Due</th><th className="num">Open</th><th className="num">Cash applied</th><th className="num">TDS</th><th className="num">{p.writeoff_kind === "bank_charge" ? "Bank charges" : "Write-off"}</th><th>Evidence</th></tr></thead>
             <tbody>{p.allocations.map((a) => (
-              <tr key={a.invoice_id}><td style={{ whiteSpace: "nowrap" }}>{a.number} {a.disputed && <Chip tone="bad">disputed</Chip>}</td><td style={{ whiteSpace: "nowrap" }}>{date(a.due_date)}</td><td className="num">{money(a.invoice_open_minor)}</td><td className="num"><b>{money(a.applied_minor)}</b></td>
-                <td className="num">{a.tds_minor ? <span title={a.tds_section ?? ""}>{money(a.tds_minor)}{a.tds_rate_bp ? <span className="faint"> @{(a.tds_rate_bp / 100).toFixed(a.tds_rate_bp % 100 ? 2 : 0)}%</span> : null}</span> : "—"}</td>
-                <td className="num">{a.writeoff_minor ? money(a.writeoff_minor) : "—"}</td><td>{a.reference_hit ? <Chip tone={a.reference_hit === "serial" ? "warn" : "good"}>{HIT[a.reference_hit] ?? a.reference_hit}</Chip> : <Chip>amount / history</Chip>}</td></tr>
+              <tr key={a.invoice_id}><td style={{ whiteSpace: "nowrap" }}>{a.number} {a.disputed && <Chip tone="bad">disputed</Chip>}</td><td style={{ whiteSpace: "nowrap" }}>{date(a.due_date)}</td><td className="num">{money(a.invoice_open_minor, a.currency)}</td><td className="num"><b>{money(a.applied_minor, a.currency)}</b></td>
+                <td className="num">{a.tds_minor ? <span title={a.tds_section ?? ""}>{money(a.tds_minor, a.currency)}{a.tds_rate_bp ? <span className="faint"> @{(a.tds_rate_bp / 100).toFixed(a.tds_rate_bp % 100 ? 2 : 0)}%</span> : null}</span> : "—"}</td>
+                <td className="num">{a.writeoff_minor ? money(a.writeoff_minor, a.currency) : "—"}</td><td>{a.reference_hit ? <Chip tone={a.reference_hit === "serial" ? "warn" : "good"}>{HIT[a.reference_hit] ?? a.reference_hit}</Chip> : <Chip>amount / history</Chip>}</td></tr>
             ))}</tbody></table>
         ) : <Empty>No invoices — cash would be held on account.</Empty>}
-        {p.short_minor > 0 && <div className="note warn">Short-paid by {money(p.short_minor)} — accepting opens a short-pay exception for follow-up.</div>}
-        {p.unapplied_minor > 0 && <div className="note warn">{money(p.unapplied_minor)} is left over — accepting holds it on account and opens an overpayment exception.</div>}
+        {p.settle_currency && <div className="note warn"><b>Cross-currency settlement.</b> A {t.currency} receipt of {money(t.receivable_minor, t.currency)} settles {p.settle_currency} invoices at an implied rate of <b>{rate6(p.settle_rate_micro)}</b>
+          {t.fx_ccy && t.fx_minor ? <> (payer stated {money(t.fx_minor, t.fx_ccy)})</> : <> — <b>the foreign amount is estimated</b> from the rate table, not stated by the payer</>}. Realised FX gain/loss against each invoice's booking rate is computed when the journal is built.</div>}
+        {p.short_minor > 0 && <div className="note warn">Short-paid by {money(p.short_minor, p.currency)} — accepting opens a short-pay exception for follow-up.</div>}
+        {p.unapplied_minor > 0 && <div className="note warn">{money(p.unapplied_minor, p.currency)} is left over — accepting holds it on account and opens an overpayment exception.</div>}
         {writable && <div className="row mt wrap"><button className="btn primary" disabled={busy} onClick={onAccept}>Accept <span className="kbd">A</span></button><button className="btn" disabled={busy} onClick={onReject}>Reject <span className="kbd">R</span></button><button className="btn" onClick={onManual}>Allocate manually…</button></div>}
       </div>
 

@@ -229,3 +229,11 @@ def test_audit_chain_detects_tampering_and_deletion(w):
     w.db.flush()
     gap = audit.verify_chain(w.db)
     assert not gap["ok"] and "gap" in gap["reason"]
+
+
+def test_manual_allocation_across_currencies_is_refused(w):
+    c = w.customer("X1", "Globex Corporation")
+    inv = w.invoice(c, "EXP/1", 10_000_00, gst_pct=0, currency="USD", booking_rate=83_000_000)
+    t = w.credit(1_000_000, "NEFT-ZZZZN26274000700-MYSTERY PAYER")
+    with pytest.raises(workflow.WorkflowError, match="cross-currency"):
+        workflow.manual_match(w.db, w.users["ar_analyst"], t, [{"invoice_id": inv.id, "applied_minor": 1_000_000}], "same number, different currency")

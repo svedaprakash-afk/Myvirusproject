@@ -16,12 +16,12 @@ from ..models import MatchFeedback, ScoringModel
 
 FEATURES = [
     "customer_conf", "name_agree", "ref_full", "ref_serial", "remit", "amount_exact", "amount_tol", "tds_explained",
-    "tds_usual", "unique", "fifo", "history", "ambiguity", "unexplained", "date_anomaly", "partial_pay", "bundle_size",
+    "tds_usual", "unique", "fifo", "history", "ambiguity", "unexplained", "date_anomaly", "partial_pay", "bundle_size", "fx_estimated",
 ]
 PRIOR_WEIGHTS = {
     "bias": -3.2, "customer_conf": 2.0, "name_agree": 0.6, "ref_full": 3.2, "ref_serial": 1.4, "remit": 2.6,
     "amount_exact": 2.1, "amount_tol": 1.1, "tds_explained": 0.7, "tds_usual": 0.9, "unique": 0.9, "fifo": 0.5,
-    "history": 0.6, "ambiguity": -2.2, "unexplained": -3.4, "date_anomaly": -1.2, "partial_pay": -0.8, "bundle_size": -0.5,
+    "history": 0.6, "ambiguity": -2.2, "unexplained": -3.4, "date_anomaly": -1.2, "partial_pay": -0.8, "bundle_size": -0.5, "fx_estimated": -1.2,
 }
 LABELS = {
     "customer_conf": "Payer identified", "name_agree": "Payer name similarity", "ref_full": "Invoice number in reference",
@@ -29,7 +29,7 @@ LABELS = {
     "amount_tol": "Amount within tolerance", "tds_explained": "Shortfall explained by TDS", "tds_usual": "TDS rate is customer's usual",
     "unique": "Only one plausible combination", "fifo": "Oldest invoices first", "history": "Fits customer's payment history",
     "ambiguity": "Competing combinations", "unexplained": "Unexplained difference", "date_anomaly": "Payment predates invoice",
-    "partial_pay": "Partial payment", "bundle_size": "Many invoices in one payment", "bias": "Baseline",
+    "partial_pay": "Partial payment", "bundle_size": "Many invoices in one payment", "fx_estimated": "Foreign amount estimated from rate table", "bias": "Baseline",
 }
 
 
@@ -77,7 +77,7 @@ def train(weights: dict, samples: list[tuple[dict, int]], epochs: int = 40, lr: 
                 w[k] = w.get(k, 0.0) - lr * (err * x + l2_prior * (w.get(k, 0.0) - PRIOR_WEIGHTS[k]))
     # keep signs of the semantic features sane: penalties stay <= 0, evidence stays >= 0
     for k in FEATURES:
-        if k in ("ambiguity", "unexplained", "date_anomaly", "partial_pay", "bundle_size"):
+        if k in ("ambiguity", "unexplained", "date_anomaly", "partial_pay", "bundle_size", "fx_estimated"):
             w[k] = min(w[k], 0.0)
         else:
             w[k] = max(w[k], 0.0)

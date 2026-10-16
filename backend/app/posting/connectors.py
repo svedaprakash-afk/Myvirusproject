@@ -43,11 +43,13 @@ class GenericCsvConnector:
     def render(self, batch: PostingBatch, entity: LegalEntity) -> Rendered:
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["voucher_no", "posting_date", "line_type", "account", "party_code", "invoice_ref", "debit", "credit", "currency", "narration"])
+        w.writerow(["voucher_no", "posting_date", "line_type", "account", "party_code", "invoice_ref", "debit", "credit", "currency", "exchange_rate", "base_debit", "base_credit", "narration"])
         for ln in batch.lines:
             w.writerow([ln.voucher_no, ln.posting_date.isoformat(), ln.line_type, ln.account, getattr(ln, "_party", "") or "",
                         getattr(ln, "_inv", "") or "", f"{ln.debit_minor / 100:.2f}" if ln.debit_minor else "",
-                        f"{ln.credit_minor / 100:.2f}" if ln.credit_minor else "", ln.currency, ln.narration])
+                        f"{ln.credit_minor / 100:.2f}" if ln.credit_minor else "", ln.currency,
+                        f"{ln.rate_micro / 1e6:.6f}" if ln.rate_micro else "", f"{ln.base_debit_minor / 100:.2f}" if ln.base_debit_minor else "",
+                        f"{ln.base_credit_minor / 100:.2f}" if ln.base_credit_minor else "", ln.narration])
         return Rendered(f"cashapp_batch_{batch.id}.csv", buf.getvalue().encode(), "text/csv")
 
 
@@ -57,13 +59,14 @@ class CanonicalJsonConnector:
     def render(self, batch: PostingBatch, entity: LegalEntity) -> Rendered:
         vouchers = []
         for vno, lines in _vouchers(batch).items():
-            dr = sum(x.debit_minor for x in lines)
-            cr = sum(x.credit_minor for x in lines)
+            dr = sum(x.base_debit_minor for x in lines)
+            cr = sum(x.base_credit_minor for x in lines)
             vouchers.append({
-                "voucher_no": vno, "date": lines[0].posting_date.isoformat(), "currency": lines[0].currency, "total_debit": dr / 100,
+                "voucher_no": vno, "date": lines[0].posting_date.isoformat(), "base_currency": entity.base_currency, "total_debit": dr / 100,
                 "total_credit": cr / 100, "balanced": dr == cr,
                 "lines": [{"type": x.line_type, "account": x.account, "party": getattr(x, "_party", None), "invoice": getattr(x, "_inv", None),
-                           "debit": x.debit_minor / 100, "credit": x.credit_minor / 100, "narration": x.narration} for x in lines],
+                           "currency": x.currency, "exchange_rate": (x.rate_micro / 1e6) if x.rate_micro else None, "debit": x.debit_minor / 100,
+                           "credit": x.credit_minor / 100, "base_debit": x.base_debit_minor / 100, "base_credit": x.base_credit_minor / 100, "narration": x.narration} for x in lines],
             })
         doc = {"schema": "cashapp.journal/1", "batch_id": batch.id, "idempotency_key": batch.idempotency_key, "legal_entity": entity.name,
                "gstin": entity.gstin, "vouchers": vouchers}

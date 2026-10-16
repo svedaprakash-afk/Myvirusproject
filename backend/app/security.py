@@ -55,6 +55,7 @@ P = {
     "audit": {Role.auditor, Role.finance_head, Role.admin},
     "train": {Role.admin, Role.finance_head},
     "demo": {Role.admin},
+    "fx": {Role.treasury, Role.finance_head, Role.admin},
 }
 # Role hierarchy for approval-limit checks (higher rank may approve what lower rank can).
 RANK = {Role.ar_analyst: 1, Role.ar_manager: 2, Role.treasury: 2, Role.finance_head: 3, Role.admin: 0, Role.auditor: 0}

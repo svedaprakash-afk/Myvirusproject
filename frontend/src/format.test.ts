@@ -12,6 +12,13 @@ describe("format", () => {
     expect(compact(34_50_000_00)).toBe("₹34.50 L");
     expect(compact(1_250_00)).toBe("₹1.3 K");
   });
+  it("never renders a foreign currency with a rupee sign and groups by currency convention", () => {
+    expect(money(1234567, "USD")).toBe("$12,345.67");
+    expect(money(-3500, "USD")).toBe("−$35.00");
+    expect(money(1234567)).toBe("₹12,345.67");
+    expect(money(5000000, { ccy: "EUR", sign: true })).toBe("+€50,000.00");
+    expect(compact(250_000_000, "USD")).toBe("$2.50 M");
+  });
   it("parses rupee input to exact paise without float error", () => {
     expect(toMinor("1,18,000.10")).toBe(11800010);
     expect(toMinor("0.29")).toBe(29);

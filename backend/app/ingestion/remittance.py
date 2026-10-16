@@ -137,6 +137,10 @@ class LLMExtractor:
             else:
                 import httpx
 
+                from ..config import check_egress
+
+                check_egress("https://api.anthropic.com")   # raises in data-residency strict mode unless explicitly allow-listed
+
                 r = httpx.post("https://api.anthropic.com/v1/messages", json=body, timeout=30,
                                headers={"x-api-key": self.api_key, "anthropic-version": "2023-06-01"})
                 r.raise_for_status()
@@ -168,7 +172,9 @@ class LLMExtractor:
 def get_extractor() -> RemittanceExtractor:
     from ..config import settings
 
-    if settings.anthropic_api_key:
+    from ..config import egress_allowed
+
+    if settings.anthropic_api_key and egress_allowed("api.anthropic.com"):
         return LLMExtractor(settings.anthropic_api_key, settings.llm_model)
     return RuleExtractor()
 

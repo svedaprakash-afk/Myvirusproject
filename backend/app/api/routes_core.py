@@ -43,8 +43,11 @@ def me(user: User = Depends(current_user)):
 
 
 @router.get("/connectors")
-def connectors(user: User = Depends(require("view"))):
-    return [{"name": c.name, "label": c.label, "status": c.status} for c in REGISTRY.values()]
+def connectors(entity_id: int | None = None, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from ..posting import mapped
+
+    e = entity_for(db, user, entity_id) if entity_id else None
+    return mapped.available(e) if e else [{"name": c.name, "label": c.label, "status": c.status} for c in REGISTRY.values()]
 
 
 @router.get("/entities")
@@ -200,7 +203,7 @@ async def ingest_open_items(entity_id: int = Form(...), full_snapshot: bool = Fo
     e = entity_for(db, user, entity_id)
     try:
         if file is not None:
-            rows = ing.csv_to_open_items(await _read(file))
+            rows = ing.csv_to_open_items(await _read(file), ((e.config or {}).get("integrations") or {}).get("erp_import"), file.filename or "")
         elif rows_json:
             rows = json.loads(rows_json)
         else:

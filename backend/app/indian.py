@@ -124,14 +124,17 @@ _INTEREST = re.compile(r"\b(INT\.?\s*PD|INTEREST\s+(PAID|CREDIT)|CREDIT\s+INTERE
 _CHARGES = re.compile(r"\b(CHARGES?|CHGS?|GST\s+ON|SERVICE\s+TAX|AMC|SMS\s+ALERT)\b", re.I)
 _REVERSAL = re.compile(r"\b(REVERSAL|REFUND|RETURNED|FAILED\s+TXN|RTN)\b", re.I)
 _RAIL = re.compile(r"\b(NEFT|RTGS|IMPS|UPI)\b|MMT/", re.I)
-_SKIP = {"NEFT", "RTGS", "IMPS", "UPI", "CR", "DR", "MMT", "ACH", "C", "NACH", "CLG", "CHQ", "DEP", "P2A", "P2M", "P2P", "IN"}
+_SKIP = {"NEFT", "RTGS", "IMPS", "UPI", "CR", "DR", "MMT", "ACH", "C", "NACH", "CLG", "CHQ", "DEP", "P2A", "P2M", "P2P", "IN", "BY", "TRANSFER",
+         "CREDIT", "BIL", "INFT", "INF", "IFT", "INWARD", "REMITTANCE", "FROM", "TO", "FIRC", "SWIFT", "RETURN"}
+_FX = re.compile(r"\b(USD|EUR|GBP|AED|SGD|JPY|CAD|AUD|CHF|HKD|CNY)\s*([\d,]+(?:\.\d{1,2})?)", re.I)
+_RETURN_START = re.compile(r"^\s*(NEFT|RTGS|IMPS|UPI)?[\s\-/]*(RETURN|RTN|REVERSAL|REV)\b", re.I)
 
 
 def _is_utr_like(tok: str) -> bool:
     return sum(c.isdigit() for c in tok) >= 6 and len(tok) >= 14 and not IFSC_RE.match(tok)
 
 
-def parse_narration(text: str) -> ParsedNarration:
+def parse_narration(text: str, rules: list[dict] | None = None) -> ParsedNarration:
     """Best-effort extraction from Indian bank narrations (NEFT/RTGS/IMPS/UPI/cheque/ACH/gateway)."""
     raw = (text or "").strip()
     up = raw.upper()
@@ -140,7 +143,9 @@ def parse_narration(text: str) -> ParsedNarration:
         return p
 
     rail = bool(_RAIL.search(raw))
-    if _INTEREST.search(raw):
+    if _RETURN_START.match(raw):
+        p.kind = "reversal"
+    elif _INTEREST.search(raw):
         p.kind = "interest"
     elif _REVERSAL.search(raw) and not rail:
         p.kind = "reversal"
@@ -168,6 +173,12 @@ def parse_narration(text: str) -> ParsedNarration:
             p.channel = "CHEQUE"
         elif re.search(r"\b(CASH\s+DEP|CDM)\b", up):
             p.channel, p.kind = "CASH", "cash_deposit"
+        elif re.search(r"\b(INWARD\s+REMITTANCE|SWIFT|FIRC|FCY\s+CR)\b", up):
+            p.channel = "SWIFT"
+            if m := _FX.search(raw):
+                p.extra["fx_ccy"], p.extra["fx_minor"] = m.group(1).upper(), int(round(float(m.group(2).replace(",", "")) * 100))
+            if m := re.search(r"\bFROM\s+([A-Za-z][A-Za-z .&]{2,60}?)(?=\s*[-/]|$)", raw):
+                p.payer_name = m.group(1).strip()
 
     if m := _VPA.search(raw):
         p.payer_vpa = m.group(1).lower()
@@ -185,6 +196,10 @@ def parse_narration(text: str) -> ParsedNarration:
             if _is_utr_like(tok):
                 p.utr = tok
                 break
+
+    if not p.utr and p.channel in ("NEFT", "RTGS"):  # SBI-style "INF/NEFT/<12-digit ref>/IFSC/NAME"
+        if m := re.search(r"(?<!\d)(\d{10,22})(?!\d)", raw):
+            p.utr = m.group(1)
 
     name, remark_parts = None, []
     for s in (x.strip() for x in re.split(r"[-/*|]|\s{2,}", raw)):
@@ -216,7 +231,62 @@ def parse_narration(text: str) -> ParsedNarration:
                 if len(lead) >= 2 and sum(c.isalpha() for c in " ".join(lead)) >= 6:
                     name = " ".join(lead)
             remark_parts.append(s)
-    if p.kind != "gateway":
+    if p.kind != "gateway" and not p.payer_name:
         p.payer_name = name
     p.remark = " ".join(remark_parts).strip()
+    if rules:
+        _apply_rules(p, raw, rules)
     return p
+
+
+MAX_RULES, MAX_PATTERN = 30, 300
+_NESTED_QUANT = re.compile(r"\([^)]*[+*][^)]*\)[+*{]")   # (a+)+ style catastrophic-backtracking shapes
+_FIELDS = ("utr", "payer", "ifsc", "vpa", "remark")
+
+
+def validate_rules(rules: list[dict]) -> list[str]:
+    """Bank-specific narration rules are admin-supplied regexes. Reject anything malformed or ReDoS-shaped at save time."""
+    errs: list[str] = []
+    if not isinstance(rules, list) or len(rules) > MAX_RULES:
+        return [f"rules must be a list of at most {MAX_RULES}"]
+    for i, r in enumerate(rules):
+        pat = r.get("pattern") if isinstance(r, dict) else None
+        if not isinstance(pat, str) or not pat or len(pat) > MAX_PATTERN:
+            errs.append(f"rule {i + 1}: pattern required (max {MAX_PATTERN} chars)")
+            continue
+        if _NESTED_QUANT.search(pat):
+            errs.append(f"rule {i + 1}: nested quantifiers are not allowed (catastrophic backtracking risk)")
+            continue
+        try:
+            rx = re.compile(pat, re.I)
+        except re.error as e:
+            errs.append(f"rule {i + 1}: invalid regex ({e})")
+            continue
+        for f in _FIELDS:
+            g = r.get(f)
+            if g and g not in rx.groupindex:
+                errs.append(f"rule {i + 1}: '{f}' refers to group '{g}' which the pattern does not define")
+        if r.get("kind") and r["kind"] not in ("customer", "interest", "charges", "reversal", "gateway", "cash_deposit"):
+            errs.append(f"rule {i + 1}: unknown kind '{r['kind']}'")
+    return errs
+
+
+def _apply_rules(p: ParsedNarration, raw: str, rules: list[dict]) -> None:
+    for r in rules[:MAX_RULES]:
+        try:
+            m = re.search(r["pattern"][:MAX_PATTERN], raw, re.I)
+        except (re.error, KeyError, TypeError):
+            continue
+        if not m:
+            continue
+        g = m.groupdict()
+        if r.get("channel"):
+            p.channel = str(r["channel"]).upper()
+        if r.get("kind"):
+            p.kind = r["kind"]
+        for f, attr in (("utr", "utr"), ("payer", "payer_name"), ("ifsc", "payer_ifsc"), ("vpa", "payer_vpa"), ("remark", "remark")):
+            v = (g.get(r.get(f) or "") or "").strip()
+            if v:
+                setattr(p, attr, v.lower() if f == "vpa" else (v.upper() if f in ("utr", "ifsc") else v))
+        p.extra["rule"] = r.get("name") or r["pattern"][:40]
+        return   # first matching rule wins

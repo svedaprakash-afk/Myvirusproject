@@ -26,6 +26,7 @@ export default function Dashboard() {
         {can("ar_analyst", "ar_manager", "treasury") && <button className="btn primary" disabled={busy} onClick={() => run(() => api.post<any>("/matching/run", { entity_id: entity.id }), (r) => `Matched ${r.processed} receipts: ${r.auto} auto, ${r.review} to review, ${r.exception} exceptions`)}>Run matching</button>}
         {can("admin") && <button className="btn" disabled={busy} onClick={() => { if (confirm("Replace ALL data with the synthetic demo tenant?")) run(() => api.post("/demo/seed"), "Demo data loaded — sign in again to refresh roles"); }}>Reset demo data</button>}
       </PageHead>
+      {d.missing_rates?.length > 0 && <div className="note bad mb" role="alert"><b>Missing exchange rates for {d.missing_rates.join(", ")}.</b> Those amounts are excluded from every total on this page (never added 1:1). Add rates under Settings → FX rates.</div>}
       {empty && <div className="card mb"><Empty>No data yet. Go to <Link to="/import">Import</Link> to load open invoices and a bank statement{can("admin") ? ", or use “Reset demo data”" : ""}.</Empty></div>}
 
       <div className="grid g4 mb">
@@ -40,6 +41,8 @@ export default function Dashboard() {
         <Link to="/approvals" className="card kpi" style={{ color: "inherit" }}><span className="l">Pending approvals</span><span className="v">{d.queues.approvals_pending}</span><span className="s">Write-offs, adjustments, refunds</span></Link>
       </div>
 
+      {d.foreign_exposure?.length > 0 && <div className="card mb"><div className="row between wrap"><h2 style={{ margin: 0 }}>Foreign-currency receivables</h2><span className="faint" style={{ fontSize: 12 }}>base-currency equivalents at the latest rate</span></div>
+        <div className="row wrap gap-lg mt">{d.foreign_exposure.map((f: any) => <span key={f.currency}><b className="num">{money(f.open_minor, f.currency)}</b> <span className="muted">≈ {compact(f.base_equivalent_minor)}</span></span>)}</div></div>}
       <div className="grid g2 mb">
         <div className="card">
           <h2>Unapplied cash by age</h2>

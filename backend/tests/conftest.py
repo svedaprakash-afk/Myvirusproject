@@ -63,7 +63,7 @@ class World:
         self.cust[code] = c
         return c
 
-    def invoice(self, cust, number, taxable, gst_pct=18, days_ago=40, terms=30, doc_type="invoice") -> Invoice:
+    def invoice(self, cust, number, taxable, gst_pct=18, days_ago=40, terms=30, doc_type="invoice", currency="INR", booking_rate=1_000_000) -> Invoice:
         from app.money import pct_of
 
         gst = pct_of(taxable, gst_pct * 100)
@@ -71,18 +71,19 @@ class World:
         sign = -1 if doc_type == "credit_note" else 1
         dt = TODAY - timedelta(days=days_ago)
         inv = Invoice(entity_id=self.e.id, customer_id=cust.id, number=number, doc_type=doc_type, invoice_date=dt, due_date=dt + timedelta(days=terms),
-                      taxable_minor=sign * taxable, gst_minor=sign * gst, total_minor=sign * total, open_minor=sign * total)
+                      taxable_minor=sign * taxable, gst_minor=sign * gst, total_minor=sign * total, open_minor=sign * total,
+                      currency=currency, booking_rate_micro=booking_rate)
         self.db.add(inv)
         self.db.flush()
         return inv
 
-    def credit(self, amount, narration, d=None, utr=None, payer=None, channel="NEFT", fee=0, extra=None) -> PaymentTransaction:
+    def credit(self, amount, narration, d=None, utr=None, payer=None, channel="NEFT", fee=0, extra=None, currency="INR") -> PaymentTransaction:
         from app.indian import parse_narration
 
         pn = parse_narration(narration)
         self.n += 1
         t = PaymentTransaction(entity_id=self.e.id, bank_account_id=self.bank.id, txn_date=d or TODAY - timedelta(days=2), direction="credit", amount_minor=amount,
-                               fee_minor=fee, currency="INR", channel=pn.channel if channel == "NEFT" else channel, utr=utr or pn.utr, narration=narration,
+                               fee_minor=fee, currency=currency, fx_ccy=pn.extra.get("fx_ccy"), fx_minor=pn.extra.get("fx_minor"), channel=pn.channel if channel == "NEFT" else channel, utr=utr or pn.utr, narration=narration,
                                payer_name=payer if payer is not None else pn.payer_name, payer_vpa=pn.payer_vpa, dedupe_key=f"k{self.n}-{amount}", status=TxnStatus.new,
                                extra={"kind": pn.kind, **(extra or {})})
         self.db.add(t)

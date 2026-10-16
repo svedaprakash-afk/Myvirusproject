@@ -55,6 +55,10 @@ class Cand:
     prob: float = 0.0
     n_competitors: int = 0
     tds_scenario: TdsScenario | None = None
+    writeoff_kind: str = "tolerance"          # tolerance | bank_charge
+    settle_currency: str | None = None        # set when invoices are in a different currency than the receipt
+    settle_rate_micro: int | None = None
+    fx_estimated: bool = False                # foreign amount inferred from the rate table rather than stated by the payer
 
     @property
     def inv_ids(self) -> frozenset[int]:
@@ -78,7 +82,7 @@ def inr(m: int) -> str:
 
 
 # ---------------------------------------------------------------------------------------------- allocation
-def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int, tol: int, hits: dict[int, str]) -> Cand:
+def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int, tol: int, hits: dict[int, str], max_charge: int = 0) -> Cand:
     """Decide how `pay` clears this set of invoices: exact, within tolerance, TDS-explained, partial or over."""
     invs = sorted(invs, key=lambda i: (i.due_date, i.id))
     total_open = sum(i.open_minor for i in invs)
@@ -126,6 +130,11 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
             c.evidence.append(
                 f"Shortfall of {inr(-diff)} equals {sc.rate_bp / 100:g}% TDS on {'taxable value' if sc.base == 'taxable' else 'invoice total'}"
                 f" ({sc.section or 'TDS'}){' — customer\'s usual rate' if sc.usual else ' — NOT this customer\'s usual rate'}")
+        elif 0 < -diff <= max_charge:
+            # foreign receipts routinely arrive net of intermediary/correspondent bank charges; book them as charges, not write-offs
+            settle_residual(diff, "charge")
+            c.writeoff_kind = "bank_charge"
+            c.evidence.append(f"Shortfall of {inr(-diff)} looks like intermediary bank charges on a foreign receipt (limit {inr(max_charge)})")
         else:
             remaining = pay
             for a in allocs:
@@ -149,6 +158,10 @@ def balance_cash(c: Cand, pay: int) -> None:
         tgt.writeoff -= diff
 
 
+def charge_allowance(ctx: Ctx, txn) -> int:
+    return int(ctx.cfg.get("foreign_bank_charge_max_minor", 0)) if txn.currency != ctx.entity.base_currency else 0
+
+
 def base_feats(ctx: Ctx, txn: PaymentTransaction, cust: Customer | None, guess: Guess | None, c: Cand) -> dict:
     pay = txn.receivable_minor
     n = max(len(c.allocs), 1)
@@ -160,12 +173,13 @@ def base_feats(ctx: Ctx, txn: PaymentTransaction, cust: Customer | None, guess: 
         "ref_serial": sum(h in ("serial", "po") for h in hits) / n,
         "remit": sum(h == "remittance" for h in hits) / n,
         "amount_exact": 1.0 if c.kind == "exact" or (c.kind == "tds" and c.writeoff == 0) else 0.0,
-        "amount_tol": 1.0 if c.kind == "tolerance" or (c.kind == "tds" and c.writeoff) else 0.0,
+        "amount_tol": 1.0 if c.kind in ("tolerance", "charge") or (c.kind == "tds" and c.writeoff) else 0.0,
         "tds_explained": 1.0 if c.kind == "tds" else 0.0,
         "tds_usual": 1.0 if c.tds_scenario and c.tds_scenario.usual else 0.0,
         # unapplied cash is only suspicious when nothing independent (a reference) anchors the allocation
         "unexplained": (min(1.0, c.unapplied / pay) if pay else 0.0) * (1 - max(sum(h in ("exact", "irn") for h in hits) / n, sum(h == "remittance" for h in hits) / n)),
         "bundle_size": min(1.0, (n - 1) / 5),
+        "fx_estimated": 1.0 if c.fx_estimated else 0.0,
         "partial_pay": 1.0 if c.kind == "partial" else 0.0,
     }
     if cust and c.allocs:
@@ -192,13 +206,13 @@ def finish(ctx: Ctx, c: Cand) -> Cand:
 
 # ---------------------------------------------------------------------------------------------- candidate builders
 def ref_candidate(ctx: Ctx, txn, cust: Customer, guess: Guess, hits: dict[int, str]) -> Cand | None:
-    invs = [i for i in ctx.open_by_cust.get(cust.id, []) if i.id in hits and not i.disputed]
-    disputed = [i for i in ctx.open_by_cust.get(cust.id, []) if i.id in hits and i.disputed]
+    invs = [i for i in ctx.open_by_cust.get(cust.id, []) if i.id in hits and not i.disputed and i.currency == txn.currency]
+    disputed = [i for i in ctx.open_by_cust.get(cust.id, []) if i.id in hits and i.disputed and i.currency == txn.currency]
     if not invs and not disputed:
         return None
     use = invs + disputed  # disputed invoices are included so the guardrail can block auto-approval and flag it
     tol = ctx.tolerance(cust.id, txn.currency, txn.receivable_minor)
-    c = allocate_set(ctx, cust, use, txn.receivable_minor, tol, hits)
+    c = allocate_set(ctx, cust, use, txn.receivable_minor, tol, hits, charge_allowance(ctx, txn))
     c.strategy = "reference"
     kinds = sorted({hits[i.id] for i in use})
     c.evidence.insert(0, f"{', '.join(i.number for i in use)} referenced in payment text ({'/'.join(kinds)})")
@@ -217,7 +231,7 @@ def remittance_candidate(ctx: Ctx, txn, cust: Customer | None, guess: Guess | No
     resolved: list[tuple[dict, Invoice]] = []
     for ln in lines:
         key = normalise_ref(ln["ref"])
-        pool = [i for i in ctx.by_norm.get(key, []) if i.open_minor != 0]
+        pool = [i for i in ctx.by_norm.get(key, []) if i.open_minor != 0 and i.currency == txn.currency]
         if cust:
             pool = [i for i in pool if i.customer_id == cust.id]
         if len(pool) == 1:
@@ -278,14 +292,62 @@ def amount_candidates(ctx: Ctx, txn, cust: Customer, guess: Guess) -> list[Cand]
                 continue
             seen.add(fs)
             chosen = [i for i in pool if i.id in fs]
-            c = allocate_set(ctx, cust, chosen, pay, tol, {})
-            if c.kind in ("exact", "tolerance", "tds"):
+            c = allocate_set(ctx, cust, chosen, pay, tol, {}, charge_allowance(ctx, txn))
+            if c.kind in ("exact", "tolerance", "tds", "charge"):
                 c.strategy = "amount_combination"
                 c.evidence.insert(0, f"Combination of {len(chosen)} open invoice(s) ({', '.join(i.number for i in chosen)}) sums to the payment")
                 c.feats = base_feats(ctx, txn, cust, guess, c)
                 out.append(c)
         if len(out) >= 8:
             break
+    return out
+
+
+def cross_candidates(ctx: Ctx, txn, cust: Customer, guess: Guess, hits: dict[int, str]) -> list[Cand]:
+    """Receipt in base currency (INR) for invoice(s) in a foreign currency. The payer's stated foreign amount (from the bank's
+    inward-remittance narration) is exact evidence; otherwise it is estimated from the rate table, which is weaker evidence."""
+    from ..fx import from_base, rate_on
+
+    base = ctx.entity.base_currency
+    if txn.currency != base:
+        return []
+    foreign = [i for i in ctx.open_by_cust.get(cust.id, []) if i.open_minor > 0 and i.currency != base and not i.disputed]
+    out: list[Cand] = []
+    pay = txn.receivable_minor
+    spread = int(ctx.cfg.get("fx_spread_bp", 150))
+    for ccy in sorted({i.currency for i in foreign}):
+        pool = [i for i in foreign if i.currency == ccy]
+        exact = txn.fx_minor if txn.fx_ccy == ccy and txn.fx_minor else None
+        rate = rate_on(ctx.db, ccy, txn.txn_date, base)
+        if exact is None and rate is None:
+            continue
+        target = exact if exact is not None else from_base(pay, rate)
+        tol = ctx.tolerance(cust.id, ccy, target)
+        if exact is None:
+            tol = max(tol, target * spread // 10000)
+        sets: list[list[Invoice]] = []
+        refd = [i for i in pool if i.id in hits]
+        if refd:
+            sets.append(refd)
+        for keys, _ in find_subsets([(i.id, i.open_minor) for i in pool], target, tol, max_size=int(ctx.cfg.get("max_subset_size", 8))):
+            chosen = [i for i in pool if i.id in set(keys)]
+            if all({x.id for x in chosen} != {y.id for y in s} for s in sets):
+                sets.append(chosen)
+        for chosen in sets[:4]:
+            total = sum(i.open_minor for i in chosen)
+            if abs(target - total) > tol:
+                continue
+            c = Cand(cust.id, [Alloc(i, i.open_minor, hit=hits.get(i.id)) for i in sorted(chosen, key=lambda i: (i.due_date, i.id))], "cross_currency", {})
+            c.kind = "exact" if exact is not None and total == exact else "tolerance"
+            c.settle_currency, c.settle_rate_micro, c.fx_estimated = ccy, int(pay * 1_000_000 / total), exact is None
+            c.evidence.append((f"Payer's remittance states {ccy} {exact / 100:,.2f}" if exact is not None else
+                               f"{ccy} {total / 100:,.2f} at the {txn.txn_date} rate ({rate / 1e6:.4f}) ≈ the {inr(pay)} credited, within {spread / 100:g}%")
+                              + f"; implied rate {c.settle_rate_micro / 1e6:.4f}")
+            if rate and abs(c.settle_rate_micro - rate) * 10000 > rate * spread:
+                c.warnings.append(f"Implied rate {c.settle_rate_micro / 1e6:.4f} is {abs(c.settle_rate_micro - rate) * 100 / rate:.1f}% away from the rate table ({rate / 1e6:.4f})")
+            c.feats = base_feats(ctx, txn, cust, guess, c)
+            c.feats["amount_exact"], c.feats["amount_tol"] = (1.0, 0.0) if c.kind == "exact" else (0.0, 1.0)
+            out.append(c)
     return out
 
 
@@ -331,7 +393,12 @@ def guardrails(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, 
         g.append("Leaves an unapplied or short-paid residual that needs a decision")
     if c.strategy == "fifo_guess":
         g.append("Oldest-first guess, not evidence-based")
-    if any(a.invoice.currency != txn.currency for a in c.allocs):
+    if c.strategy == "cross_currency":
+        if c.fx_estimated:
+            g.append("Foreign amount estimated from the rate table, not stated by the payer")
+        elif not cfg.get("auto_approve_cross_currency", False):
+            g.append("Cross-currency settlement (realised FX) requires confirmation")
+    elif any(a.invoice.currency != txn.currency for a in c.allocs):
         g.append("Currency differs from invoice currency")
     if any(a.invoice.open_minor < 0 and a.hit not in REF_STRONG for a in c.allocs):
         g.append("Credit note applied without being referenced")
@@ -439,7 +506,8 @@ def process_transaction(ctx: Ctx, txn: PaymentTransaction) -> dict:
         if h in ("exact", "irn", "remittance"):
             ref_customers[all_invs[iid].customer_id] = "exact"
 
-    guesses = identify(ctx, txn, remit_text, (doc.extracted or {}).get("payer_name") if doc else None, ref_customers)
+    guesses = identify(ctx, txn, remit_text, (doc.extracted or {}).get("payer_name") if doc else None, ref_customers,
+                       doc.sender if doc else None)
     plausible = [g for g in guesses if g.score >= 0.5][:3]
     serial_hits = find_references(ctx, text, [g.customer_id for g in plausible]) if plausible else {}
     hits = {**serial_hits, **exact_hits}
@@ -468,8 +536,9 @@ def process_transaction(ctx: Ctx, txn: PaymentTransaction) -> dict:
         rf = ref_candidate(ctx, txn, cust, g, cust_hits) if cust_hits else None
         if rf:
             cands.append(rf)
-        if not rf or rf.kind not in ("exact", "tolerance", "tds"):
+        if not rf or rf.kind not in ("exact", "tolerance", "tds", "charge"):
             cands += amount_candidates(ctx, txn, cust, g)
+        cands += cross_candidates(ctx, txn, cust, g, cust_hits)
         if not cands:
             fc = fifo_candidate(ctx, txn, cust, g)
             if fc:
@@ -500,6 +569,8 @@ def _amount_repeats_settled(ctx: Ctx, txn: PaymentTransaction, settled: list[Inv
     """A reference to a settled invoice is a duplicate only if the amount also repeats that invoice (optionally net of TDS).
     Otherwise it is more likely a mistyped reference, which the normal candidate flow handles (with a warning)."""
     pay = txn.receivable_minor
+    if any(i.currency != txn.currency for i in settled):
+        return False   # cannot judge an amount repeat across currencies; fall through to normal candidates
     cust = ctx.customers.get(settled[0].customer_id)
     tol = ctx.tolerance(cust.id if cust else None, txn.currency, pay)
     total = sum(i.total_minor for i in settled)
@@ -514,7 +585,7 @@ def _amount_repeats_settled(ctx: Ctx, txn: PaymentTransaction, settled: list[Inv
     return False
 
 
-EXACT_KINDS = ("exact", "tolerance", "tds")
+EXACT_KINDS = ("exact", "tolerance", "tds", "charge")
 
 
 def _resolve_competition(ctx: Ctx, cands: list[Cand]) -> list[Cand]:
@@ -538,7 +609,7 @@ def _resolve_competition(ctx: Ctx, cands: list[Cand]) -> list[Cand]:
     group = [lead] + [o for o in {id(x): x for x in [follow, *rivals]}.values() if o is not lead]
     for c in group:
         c.n_competitors = len(group) - 1
-        if c.strategy in ("amount_combination", "amount_inference"):
+        if c.strategy in ("amount_combination", "amount_inference", "cross_currency"):
             c.feats["unique"] = 0.0
         finish(ctx, c)
     names = ", ".join(a.invoice.number for a in follow.allocs)
@@ -613,7 +684,8 @@ def _propose(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, am
                                       for o in all_c if o is not c][:3]},
         features={k: round(v, 4) for k, v in c.feats.items()}, guardrails=g,
         applied_minor=c.applied, tds_minor=c.tds, writeoff_minor=tol_total, fee_minor=txn.fee_minor, unapplied_minor=c.unapplied,
-        short_minor=c.short, created_by=f"engine:{ctx.model_version}", auto=auto)
+        short_minor=c.short, created_by=f"engine:{ctx.model_version}", auto=auto,
+        settle_currency=c.settle_currency, settle_rate_micro=c.settle_rate_micro, writeoff_kind=c.writeoff_kind)
     for a in c.allocs:
         p.allocations.append(MatchAllocation(invoice_id=a.invoice.id, applied_minor=a.applied, tds_minor=a.tds, writeoff_minor=a.writeoff,
                                              tds_section=a.tds_section, tds_rate_bp=a.tds_bp, reference_hit=a.hit))

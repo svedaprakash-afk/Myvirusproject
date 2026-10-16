@@ -29,7 +29,7 @@ export default function Customers() {
       ) : (
         <div className="card flush">{!is.data ? <Loading /> : !is.data.items.length ? <Empty>No invoices.</Empty> : (
           <table><thead><tr><th>Invoice</th><th>Customer</th><th>Date</th><th>Due</th><th className="num">Total</th><th className="num">Open</th><th>Status</th></tr></thead>
-            <tbody>{is.data.items.map((i: Invoice) => <tr key={i.id}><td>{i.number} {i.doc_type === "credit_note" && <Chip>credit note</Chip>}</td><td>{i.customer.name}</td><td>{date(i.invoice_date)}</td><td>{date(i.due_date)}</td><td className="num">{money(i.total_minor)}</td><td className="num">{money(i.open_minor)}</td><td><StatusChip s={i.status} /></td></tr>)}</tbody></table>
+            <tbody>{is.data.items.map((i: Invoice) => <tr key={i.id}><td>{i.number} {i.doc_type === "credit_note" && <Chip>credit note</Chip>}</td><td>{i.customer.name}</td><td>{date(i.invoice_date)}</td><td>{date(i.due_date)}</td><td className="num">{money(i.total_minor, i.currency)}</td><td className="num">{money(i.open_minor, i.currency)}</td><td><StatusChip s={i.status} /></td></tr>)}</tbody></table>
         )}</div>
       )}
     </>
@@ -58,7 +58,7 @@ function CustomerDetail({ id, onSaved }: { id: number; onSaved: () => void }) {
           <tr><td className="muted">Avg days to pay</td><td className="num">{p.avg_days_to_pay}</td></tr><tr><td className="muted">Avg days late</td><td className="num">{p.avg_days_late}</td></tr></tbody></table> : <span className="muted">No confirmed payments yet — the model starts learning from the first accepted match.</span>}</div>
         <div className="card"><h2>Known payer identities</h2>{c.identifiers.length ? c.identifiers.map((i: any, k: number) => <div key={k} className="row between"><span><Chip>{i.kind}</Chip> <span className="mono">{i.value}</span></span><span className="faint">{i.source} · ×{i.hits}</span></div>) : <span className="muted">None learned yet.</span>}</div>
       </div>
-      <div className="card flush"><div style={{ padding: "12px 16px 0" }}><h2>Open items</h2></div>{c.open_invoices.length ? <table><thead><tr><th>Invoice</th><th>Due</th><th className="num">Open</th><th>Status</th></tr></thead><tbody>{c.open_invoices.map((i: Invoice) => <tr key={i.id}><td>{i.number}</td><td>{date(i.due_date)}</td><td className="num">{money(i.open_minor)}</td><td><StatusChip s={i.status} /></td></tr>)}</tbody></table> : <Empty>Nothing open.</Empty>}</div>
+      <div className="card flush"><div style={{ padding: "12px 16px 0" }}><h2>Open items</h2></div>{c.open_invoices.length ? <table><thead><tr><th>Invoice</th><th>Due</th><th className="num">Open</th><th>Status</th></tr></thead><tbody>{c.open_invoices.map((i: Invoice) => <tr key={i.id}><td>{i.number}</td><td>{date(i.due_date)}</td><td className="num">{money(i.open_minor, i.currency)}</td><td><StatusChip s={i.status} /></td></tr>)}</tbody></table> : <Empty>Nothing open.</Empty>}</div>
       {edit && <EditModal c={c} onClose={() => setEdit(false)} onSaved={() => { setEdit(false); d.reload(); onSaved(); }} />}
     </div>
   );

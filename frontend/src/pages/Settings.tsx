@@ -14,7 +14,8 @@ function Controls() {
   const { entity, can } = useApp();
   const cfg = useAsync(() => api.get<any>(`/entities/${entity.id}/config`), [entity.id]);
   const [f, setF] = useState<any>(null); const { run, busy } = useAction();
-  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cfg.data]);
+  const cKey = JSON.stringify(cfg.data);
+  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cKey]); // eslint-disable-line
   if (cfg.error) return <ErrorBox msg={cfg.error} />;
   if (!f) return <Loading />;
   const editable = can("admin", "finance_head");

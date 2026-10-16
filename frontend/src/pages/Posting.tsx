@@ -78,13 +78,13 @@ function VoucherTable({ lines, acked }: { lines: NonNullable<Batch["lines"]>; ac
   const all = Array.from(groups.entries());
   return (
     <>
-      <p className="muted mt" style={{ marginBottom: 6 }}>{all.length} vouchers · {lines.length} lines. Every voucher balances (debits = credits) or the batch cannot be built.</p>
+      <p className="muted mt" style={{ marginBottom: 6 }}>{all.length} vouchers · {lines.length} lines. Every voucher balances in base currency (foreign legs show their document amount and rate, with realised FX as its own line) or the batch cannot be built.</p>
       <table><thead><tr><th>Voucher</th><th>Date</th><th className="num">Lines</th><th className="num">Debit</th><th className="num">Credit</th>{acked && <th>ERP doc</th>}</tr></thead>
         <tbody>{all.slice(0, limit).map(([v, ls]) => (<Fragment key={v}>
           <tr className="click" onClick={() => setOpen(open === v ? null : v)}><td className="mono">{open === v ? "▾" : "▸"} {v}</td><td>{date(ls[0].posting_date)}</td><td className="num">{ls.length}</td>
-            <td className="num">{money(ls.reduce((a, l) => a + l.debit_minor, 0))}</td><td className="num">{money(ls.reduce((a, l) => a + l.credit_minor, 0))}</td>{acked && <td className="mono">{ls[0].erp_doc_no}</td>}</tr>
+            <td className="num">{money(ls.reduce((a, l) => a + l.base_debit_minor, 0))}{ls.some((l) => l.currency !== "INR") && <span className="chip info" style={{ marginLeft: 6 }}>{Array.from(new Set(ls.map((l) => l.currency).filter((c) => c !== "INR"))).join("/")}</span>}</td><td className="num">{money(ls.reduce((a, l) => a + l.base_credit_minor, 0))}</td>{acked && <td className="mono">{ls[0].erp_doc_no}</td>}</tr>
           {open === v && <tr><td colSpan={acked ? 6 : 5} style={{ background: "var(--surface-2)" }}>
-            <table><tbody>{ls.map((l) => <tr key={l.id}><td>{title(l.line_type)}</td><td className="mono">{l.account}</td><td className="num">{l.debit_minor ? money(l.debit_minor) : ""}</td><td className="num">{l.credit_minor ? money(l.credit_minor) : ""}</td><td className="muted">{l.narration}</td></tr>)}</tbody></table></td></tr>}</Fragment>))}</tbody></table>
+            <table><tbody>{ls.map((l) => <tr key={l.id}><td>{title(l.line_type)}</td><td className="mono">{l.account}</td><td className="num">{l.debit_minor ? money(l.debit_minor, l.currency) : ""}</td><td className="num">{l.credit_minor ? money(l.credit_minor, l.currency) : ""}</td><td className="faint">{l.rate_micro ? `@ ${(l.rate_micro / 1e6).toFixed(4)}` : ""}</td><td className="muted">{l.narration}</td></tr>)}</tbody></table></td></tr>}</Fragment>))}</tbody></table>
       {all.length > limit && <button className="btn mt" onClick={() => setLimit(limit + 50)}>Show more ({all.length - limit} remaining)</button>}
     </>
   );

@@ -27,20 +27,24 @@ def _dedupe(bank_account_id: int, t: RawTxn, utr: str | None, nth: int) -> str:
 
 
 def ingest_statement(db: Session, bank: BankAccount, filename: str, data: bytes, actor: str, actor_id: int | None,
-                     gateway: bool = False) -> dict:
+                     gateway: bool = False, profile_override: dict | None = None) -> dict:
+    profile = profile_override if profile_override is not None else (bank.profile or {})
     try:
-        fmt, raws = ("gateway_csv", parse_gateway_csv(data)) if gateway else detect_and_parse(filename, data)
+        fmt, raws = ("gateway_csv", parse_gateway_csv(data)) if gateway else detect_and_parse(filename, data, profile)
     except StatementError:
         raise
     except Exception as e:  # malformed input must never 500
         raise StatementError(f"Could not parse '{filename}': {e}") from e
+    return persist_raw(db, bank, raws, fmt, filename, hashlib.sha256(data).hexdigest()[:12], actor, actor_id, gateway, profile)
 
-    batch_id = hashlib.sha256(data).hexdigest()[:12]
+
+def persist_raw(db: Session, bank: BankAccount, raws: list[RawTxn], fmt: str, filename: str, batch_id: str, actor: str, actor_id: int | None,
+                gateway: bool = False, profile: dict | None = None) -> dict:
+    rules = (profile or {}).get("narration_rules") or None
     seen: Counter = Counter()
     inserted = dups = credits = debits = 0
-    created_ids: list[int] = []
     for t in raws:
-        pn = parse_narration(t.narration)
+        pn = parse_narration(t.narration, rules)
         utr = t.utr_hint or pn.utr
         key_base = (t.txn_date, t.direction, t.amount_minor, (utr or t.bank_ref or normalise_ref(t.narration)[:60]), t.balance_minor)
         seen[key_base] += 1
@@ -55,7 +59,8 @@ def ingest_statement(db: Session, bank: BankAccount, filename: str, data: bytes,
             fee_minor=t.fee_minor, currency=t.currency or bank.currency, channel=pn.channel if not gateway else "GATEWAY",
             utr=utr, narration=t.narration, payer_name=pn.payer_name, payer_ifsc=pn.payer_ifsc, payer_vpa=pn.payer_vpa,
             bank_ref=t.bank_ref, balance_minor=t.balance_minor, dedupe_key=key, status=status,
-            extra={"fmt": fmt, "kind": pn.kind, "remark": pn.remark, **(t.extra or {})},
+            extra={"fmt": fmt, "kind": pn.kind, "remark": pn.remark, **({"rule": pn.extra["rule"]} if "rule" in pn.extra else {}), **(t.extra or {})},
+            fx_ccy=pn.extra.get("fx_ccy"), fx_minor=pn.extra.get("fx_minor"),
         )
         db.add(txn)
         inserted += 1
@@ -64,8 +69,24 @@ def ingest_statement(db: Session, bank: BankAccount, filename: str, data: bytes,
     db.flush()
     audit.log(db, actor, "statement.ingested", "BankAccount", bank.id, bank.entity_id,
               {"file": filename, "format": fmt, "parsed": len(raws), "inserted": inserted, "duplicates": dups, "batch": batch_id}, actor_id)
-    return {"format": fmt, "parsed": len(raws), "inserted": inserted, "duplicates_skipped": dups, "credits": credits, "debits": debits,
-            "batch": batch_id}
+    return {"format": fmt, "parsed": len(raws), "inserted": inserted, "duplicates_skipped": dups, "credits": credits, "debits": debits, "batch": batch_id}
+
+
+def preview_statement(bank: BankAccount, filename: str, data: bytes, profile: dict | None, limit: int = 15) -> dict:
+    """Dry run: parse with the given (unsaved) profile and show exactly what would be ingested. Nothing is written."""
+    prof = profile if profile is not None else (bank.profile or {})
+    fmt, raws = detect_and_parse(filename, data, prof)
+    rows = []
+    for t in raws[:limit]:
+        pn = parse_narration(t.narration, prof.get("narration_rules") or None)
+        rows.append({"date": t.txn_date.isoformat(), "direction": t.direction, "amount_minor": t.amount_minor, "currency": t.currency, "narration": t.narration,
+                     "balance_minor": t.balance_minor, "parsed": {"channel": pn.channel, "utr": pn.utr, "payer": pn.payer_name, "ifsc": pn.payer_ifsc,
+                                                                  "vpa": pn.payer_vpa, "kind": pn.kind, "fx": pn.extra.get("fx_ccy"), "rule": pn.extra.get("rule")}})
+    cr = [t for t in raws if t.direction == "credit"]
+    return {"format": fmt, "rows_total": len(raws), "credits": len(cr), "debits": len(raws) - len(cr), "credit_total_minor": sum(t.amount_minor for t in cr),
+            "utr_found_pct": round(100 * sum(1 for t in cr if parse_narration(t.narration, prof.get("narration_rules") or None).utr or t.utr_hint) / len(cr), 1) if cr else None,
+            "payer_found_pct": round(100 * sum(1 for t in cr if parse_narration(t.narration, prof.get("narration_rules") or None).payer_name) / len(cr), 1) if cr else None,
+            "sample": rows}
 
 
 # ---------------------------------------------------------------------------- open items from ERP
@@ -88,21 +109,44 @@ _COLS = {
     "po_ref": ["po_ref", "po number", "po no", "customer po"],
     "currency": ["currency", "ccy"],
     "payment_terms": ["payment_terms_days", "payment terms", "credit days", "terms"],
+    "booking_rate": ["booking_rate", "exchange rate", "fx rate", "rate", "conversion rate"],
 }
 
 
-def csv_to_open_items(data: bytes) -> list[dict]:
-    rd = csv.DictReader(io.StringIO(data.decode("utf-8-sig", errors="replace")))
-    if not rd.fieldnames:
+def csv_to_open_items(data: bytes, mapping: dict | None = None, filename: str = "") -> list[dict]:
+    """Read an ERP AR extract. `mapping` = {"columns": {canonical: "Your Header"}, "delimiter": ";", "date_format": "%d.%m.%Y"} lets any
+    ERP's layout be onboarded by configuration; unmapped columns fall back to the built-in synonyms."""
+    mapping = mapping or {}
+    if filename.lower().endswith((".xlsx", ".xlsm")):
+        from openpyxl import load_workbook
+
+        grid = [list(r) for r in load_workbook(io.BytesIO(data), data_only=True, read_only=True).active.iter_rows(values_only=True)]
+        hdr = [str(h or "").strip() for h in (grid[0] if grid else [])]
+        rd_rows = [dict(zip(hdr, ["" if v is None else (v.isoformat() if hasattr(v, "isoformat") else str(v)) for v in r])) for r in grid[1:]]
+        fieldnames = hdr
+    else:
+        kw = {"delimiter": mapping["delimiter"]} if mapping.get("delimiter") else {}
+        rd = csv.DictReader(io.StringIO(data.decode(mapping.get("encoding") or "utf-8-sig", errors="replace")), **kw)
+        fieldnames, rd_rows = rd.fieldnames, list(rd)
+    if not fieldnames:
         raise ValueError("Empty file")
-    low = {h.strip().lower(): h for h in rd.fieldnames}
-    cmap = {k: next((low[s] for s in syns if s in low), None) for k, syns in _COLS.items()}
+    low = {h.strip().lower(): h for h in fieldnames}
+    custom = {k: (v or "").strip().lower() for k, v in (mapping.get("columns") or {}).items()}
+    cmap = {k: (low.get(custom[k]) if custom.get(k) else next((low[s] for s in syns if s in low), None)) for k, syns in _COLS.items()}
+    bad = [f"{k} -> '{mapping['columns'][k]}'" for k in custom if custom[k] and custom[k] not in low]
+    if bad:
+        raise ValueError("Mapped column(s) not found in the file: " + ", ".join(bad))
     if not cmap["invoice_no"] or not (cmap["customer_code"] or cmap["customer_name"]) or not cmap["total"]:
         raise ValueError("Need columns for invoice number, customer (code or name) and total amount")
     rows = []
-    for r in rd:
+    for r in rd_rows:
         g = lambda k: (r.get(cmap[k]) or "").strip() if cmap[k] else ""
-        rows.append({k: g(k) for k in cmap})
+        row = {k: g(k) for k in cmap}
+        if mapping.get("date_format"):
+            for dk in ("invoice_date", "due_date"):
+                dv = parse_date(row[dk], mapping["date_format"])
+                row[dk] = dv.isoformat() if dv else row[dk]
+        rows.append(row)
     return rows
 
 
@@ -164,6 +208,17 @@ def import_open_items(db: Session, entity: LegalEntity, rows: list[dict], actor:
                 gst, taxable = -abs(gst), -abs(taxable)
             erp_open = parse_amount(r.get("open"))
             erp_open = total if erp_open is None else (-abs(erp_open) if doc_type == "credit_note" else erp_open)
+            ccy = (r.get("currency") or entity.base_currency).upper()
+            booking = 1_000_000
+            if ccy != entity.base_currency:
+                from ..fx import parse_rate, rate_on
+
+                try:
+                    booking = parse_rate(r["booking_rate"]) if r.get("booking_rate") else rate_on(db, ccy, d_inv, entity.base_currency)
+                except Exception:
+                    booking = None
+                if not booking:
+                    raise ValueError(f"{ccy} invoice needs a booking exchange rate (column 'exchange rate') or a rate in the FX table for {d_inv}")
             inv = db.execute(select(Invoice).where(Invoice.entity_id == entity.id, Invoice.number == number)).scalar_one_or_none()
             if inv:
                 inv.open_minor = erp_open - pending.get(inv.id, 0)
@@ -171,7 +226,7 @@ def import_open_items(db: Session, entity: LegalEntity, rows: list[dict], actor:
                 stats["invoices_updated"] += 1
             else:
                 inv = Invoice(entity_id=entity.id, customer_id=cust.id, number=number, doc_type=doc_type, invoice_date=d_inv,
-                              due_date=d_due, currency=(r.get("currency") or "INR").upper(), taxable_minor=taxable, gst_minor=gst,
+                              due_date=d_due, currency=ccy, booking_rate_micro=booking, taxable_minor=taxable, gst_minor=gst,
                               total_minor=total, open_minor=erp_open, irn=(r.get("irn") or None), ack_no=(r.get("ack_no") or None),
                               eway_bill_no=(r.get("eway") or None), po_ref=(r.get("po_ref") or None))
                 db.add(inv)

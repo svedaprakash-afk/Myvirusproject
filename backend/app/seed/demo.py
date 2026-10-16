@@ -1,6 +1,9 @@
 """Seed a demo tenant by pushing synthetic files through the *real* ingestion pipeline."""
 from __future__ import annotations
 
+import csv
+import io
+
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -8,7 +11,7 @@ from .. import audit
 from ..db import Base
 from ..ingestion import service as ing
 from ..matching import engine
-from ..models import (DEFAULT_ENTITY_CONFIG, DEFAULT_LEDGERS, ApprovalKind, ApprovalPolicy, BankAccount, Customer, LegalEntity, Role,
+from ..models import (ExchangeRate, DEFAULT_ENTITY_CONFIG, DEFAULT_LEDGERS, ApprovalKind, ApprovalPolicy, BankAccount, Customer, LegalEntity, Role,
                       ToleranceRule, User)
 from ..security import hash_password
 from .generator import Dataset, build
@@ -69,7 +72,66 @@ def seed_demo(db: Session, ds: Dataset | None = None, run_matching: bool = True,
     for r in ds.remittances:
         ing.ingest_remittance(db, e.id, r["text"], "advice.txt", "email", "seed", None)
     db.flush()
+    summary["export"] = _seed_export_business(db, e, banks)
     if run_matching:
         summary["matching"] = engine.run_matching(db, e, actor="seed")
     summary["entity_id"] = e.id
     return summary
+
+
+def _seed_export_business(db: Session, e: LegalEntity, banks: dict) -> dict:
+    """Multi-currency demo: USD/EUR export invoices, a daily FX table, a USD bank account and the four settlement patterns."""
+    import random
+    from datetime import date, timedelta
+
+    from ..fx import parse_rate, rate_on
+
+    rng, today = random.Random(7), date.today()
+    usd = BankAccount(entity_id=e.id, bank_name="HDFC Bank — USD EEFC A/c", account_no="50200099990001", ifsc="HDFC0000123", currency="USD",
+                      ledger_code="1115-HDFC-USD", profile={"currency": "USD"})
+    db.add(usd)
+    r_usd, r_eur = 83.0, 90.5
+    for k in range(240, -1, -1):
+        d = today - timedelta(days=k)
+        r_usd += rng.uniform(-0.12, 0.12)
+        r_eur += rng.uniform(-0.15, 0.15)
+        if d.weekday() < 5:
+            db.add(ExchangeRate(currency="USD", rate_date=d, rate_micro=parse_rate(f"{r_usd:.4f}"), source="seed"))
+            db.add(ExchangeRate(currency="EUR", rate_date=d, rate_micro=parse_rate(f"{r_eur:.4f}"), source="seed"))
+    db.flush()
+    cust = [("X1", "Globex Corporation", "USD"), ("X2", "Nordwind Maschinen GmbH", "EUR")]
+    rows, inv = [], {}
+    for i, (code, name, ccy) in enumerate(cust):
+        for j in range(4):
+            dt = today - timedelta(days=60 - j * 9 - i * 3)
+            total = rng.choice([8_450, 12_900, 21_350, 6_780, 15_400]) + j * 137
+            n = f"EXP/26-27/{i * 10 + j + 1:04d}"
+            inv[n] = total
+            rows.append({"invoice_no": n, "customer_code": code, "customer_name": name, "invoice_date": dt.isoformat(), "due_date": (dt + timedelta(days=45)).isoformat(),
+                         "taxable": f"{total:.2f}", "gst": "0", "total": f"{total:.2f}", "open": f"{total:.2f}", "currency": ccy,
+                         "booking_rate": f"{rate_on(db, ccy, dt) / 1e6:.4f}", "payment_terms": "45"})
+    ing.import_open_items(db, e, rows, "seed", None)
+    d1, d2, d3 = today - timedelta(days=4), today - timedelta(days=3), today - timedelta(days=2)
+    rt = lambda ccy, d: rate_on(db, ccy, d) / 1e6
+    lines = [  # USD account: full payment, and one short by $35 of intermediary charges
+        (d1, "SWIFT CR-GLOBEX CORPORATION-EXP/26-27/0001", inv["EXP/26-27/0001"] * 100, ""),
+        (d2, "SWIFT CR-GLOBEX CORPORATION-EXP/26-27/0002", inv["EXP/26-27/0002"] * 100 - 3500, ""),
+    ]
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Date", "Narration", "Withdrawal Amt.", "Deposit Amt.", "Closing Balance"])
+    bal = 0
+    for d, nar, amt, _ in lines:
+        bal += amt
+        w.writerow([d.strftime("%d/%m/%y"), nar, "", f"{amt / 100:.2f}", f"{bal / 100:.2f}"])
+    ing.ingest_statement(db, usd, "usd_statement.csv", out.getvalue().encode(), "seed", None)
+    # INR account: (a) payer's USD amount stated in the inward-remittance narration; (b) EUR payment with no stated amount (rate-table estimate)
+    a_inr = round(inv["EXP/26-27/0003"] * rt("USD", d3) * 0.9985, 2)
+    b_inr = round(inv["EXP/26-27/0011"] * rt("EUR", d3) * 0.998, 2)
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Date", "Narration", "Withdrawal Amt.", "Deposit Amt.", "Closing Balance"])
+    w.writerow([d3.strftime("%d/%m/%y"), f"INWARD REMITTANCE USD {inv['EXP/26-27/0003']:,.2f} FROM GLOBEX CORPORATION-FIRC 2610{rng.randint(100, 999)}-SWIFT CITIUS33", "", f"{a_inr:.2f}", "1.00"])
+    w.writerow([d3.strftime("%d/%m/%y"), f"NEFT-HDFCN26{rng.randint(10**9, 10**10 - 1)}-NORDWIND MASCHINEN GMBH-EXP/26-27/0011", "", f"{b_inr:.2f}", "2.00"])
+    ing.ingest_statement(db, banks["main"], "inr_export_receipts.csv", out.getvalue().encode(), "seed", None)
+    return {"customers": len(cust), "invoices": len(rows)}
