@@ -1,0 +1,40 @@
+import { useState } from "react";
+import { api, setToken, type Entity, type User } from "../api";
+
+const DEMO = [["analyst@meridian.example", "AR analyst", "Works the match queue and exceptions"], ["manager@meridian.example", "AR manager", "Approves write-offs, builds posting batches"],
+  ["treasury@meridian.example", "Treasury", "Releases and exports posting batches"], ["cfo@meridian.example", "Finance head", "Approves large adjustments, tunes the AI"],
+  ["auditor@meridian.example", "Auditor", "Read-only, verifies the audit chain"], ["admin@meridian.example", "Admin", "Configuration and demo data (no financial authority)"]];
+
+export default function Login({ onLogin }: { onLogin: (u: User, e: Entity[]) => void }) {
+  const [email, setEmail] = useState(""), [pw, setPw] = useState(""), [err, setErr] = useState(""), [busy, setBusy] = useState(false);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const r = await api.post<{ token: string; user: User }>("/auth/login", { email, password: pw });
+      setToken(r.token);
+      onLogin(r.user, await api.get<Entity[]>("/entities"));
+    } catch (x) { setErr(x instanceof Error ? x.message : "Sign-in failed"); } finally { setBusy(false); }
+  }
+  return (
+    <div className="login">
+      <div className="card">
+        <div className="brand" style={{ padding: 0, marginBottom: 6 }}><i>✓</i> Cash Application</div>
+        <p className="muted" style={{ marginTop: 0 }}>AI-assisted cash application and receivables exceptions for Indian mid-market finance teams.</p>
+        <form onSubmit={submit}>
+          <div className="field"><label htmlFor="em">Email</label><input id="em" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus /></div>
+          <div className="field"><label htmlFor="pw">Password</label><input id="pw" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} required /></div>
+          {err && <div className="note bad" role="alert">{err}</div>}
+          <button className="btn primary" disabled={busy} style={{ width: "100%", justifyContent: "center" }}>{busy ? "Signing in…" : "Sign in"}</button>
+        </form>
+        <h3 style={{ marginTop: 22 }}>Demo accounts <span className="faint" style={{ textTransform: "none" }}>(password: demo1234)</span></h3>
+        <div className="grid" style={{ gap: 4 }}>
+          {DEMO.map(([e, r, d]) => (
+            <button key={e} type="button" className="btn" style={{ justifyContent: "space-between" }} onClick={() => { setEmail(e); setPw("demo1234"); }} title={d}>
+              <b>{r}</b><span className="faint" style={{ fontSize: 12 }}>{d}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
