@@ -20,6 +20,7 @@ export default function Login({ onLogin }: { onLogin: (u: User, e: Entity[]) => 
       <div className="card">
         <div className="brand" style={{ padding: 0, marginBottom: 6 }}><i>✓</i> Cash Application</div>
         <p className="muted" style={{ marginTop: 0 }}>AI-assisted cash application and receivables exceptions for Indian mid-market finance teams.</p>
+        {import.meta.env.VITE_DEMO && <div className="note" role="note"><b>Interactive demo.</b> Everything here is synthetic (a made-up manufacturer, "Meridian"). It runs on a frozen snapshot with no server: you can accept or reject matches, work exceptions and decide approvals, but changes live only in this tab. Pick a role below, then sign in.</div>}
         <form onSubmit={submit}>
           <div className="field"><label htmlFor="em">Email</label><input id="em" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus /></div>
           <div className="field"><label htmlFor="pw">Password</label><input id="pw" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} required /></div>

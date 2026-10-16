@@ -14,6 +14,10 @@ export function setToken(t: string | null) {
 export const hasToken = () => !!token;
 
 async function request<T>(method: string, path: string, body?: unknown, form?: FormData): Promise<T> {
+  if (import.meta.env.VITE_DEMO) {
+    if (form) throw new ApiError(409, "Read-only demo: file upload is switched off. This page runs on a frozen snapshot of synthetic data with no backend.");
+    return (await import("./demo/mock")).demoRequest<T>(method, path, body);
+  }
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
@@ -40,6 +44,7 @@ export const api = {
 };
 
 export async function download(path: string, filename: string, body?: unknown) {
+  if (import.meta.env.VITE_DEMO) throw new ApiError(409, "Read-only demo: downloads are switched off.");
   const res = await fetch(`/api/v1${path}`, { method: body ? "POST" : "GET", headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
   if (!res.ok) { let m = res.statusText; try { m = (await res.json()).detail || m; } catch {} throw new ApiError(res.status, m); }
   const url = URL.createObjectURL(await res.blob());

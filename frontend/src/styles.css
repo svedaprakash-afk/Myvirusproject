@@ -81,3 +81,30 @@ label { display: block; font-size: 12.5px; font-weight: 600; color: var(--muted)
 .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); } .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 .pre { white-space: pre-wrap; background: var(--surface-2); border-radius: 8px; padding: 10px 12px; font-family: var(--mono); font-size: 12px; max-height: 240px; overflow: auto; }
+
+.demo-flag { position: fixed; left: max(10px, env(safe-area-inset-left, 0px)); bottom: max(10px, env(safe-area-inset-bottom, 0px)); z-index: 50; background: var(--text); color: var(--bg); font-size: 11.5px; padding: 5px 10px; border-radius: 999px; opacity: .92; pointer-events: none; }
+@media (max-width: 760px) {
+  .side { flex-direction: row; align-items: center; flex-wrap: nowrap; gap: 6px; padding: 8px 10px; overflow-x: auto; overflow-y: hidden; }
+  .brand { padding: 4px 8px; white-space: nowrap; }
+  .nav { display: flex; flex-wrap: nowrap; gap: 2px; }
+  .nav a { white-space: nowrap; }
+  .top { flex-wrap: wrap; padding: 8px 12px; gap: 8px; }
+  .top .muted.mono { display: none; }
+}
+@media (max-width: 760px) {
+  .shell > *, .split > *, .main > * { min-width: 0; }
+  .shell { grid-template-columns: minmax(0, 1fr); }
+  .split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) {
+  .g2, .g3, .g4, .g-main, .grid { grid-template-columns: minmax(0, 1fr); }
+  .card, .grid > * { min-width: 0; }
+  .card svg { max-width: 100%; height: auto; }
+}
+@media (max-width: 760px) {
+  table { display: block; max-width: 100%; overflow-x: auto; }
+  .main { overflow-x: clip; }
+}
+.grid > * { min-width: 0; }
+.grid:not(.g2):not(.g3):not(.g4):not(.g-main) { grid-template-columns: minmax(0, 1fr); }
+.card { min-width: 0; overflow-x: auto; }
