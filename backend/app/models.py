@@ -128,7 +128,7 @@ DEFAULT_ENTITY_CONFIG = {
     "auto_approve_max_minor": 50_00_00_000,  # ₹50 lakh: above this a human must always look
     "auto_approve_enabled": True,        # False = suggest-only mode (recommended for the first weeks of a rollout)
     "auto_approve_amount_only": False,   # allow auto-approval on exact amount without any invoice reference
-    "auto_approve_cross_currency": False,  # auto-approve when invoice currency differs from the receipt's
+    "auto_approve_cross_currency": True,   # auto-approve cross-currency ONLY when the payer stated the foreign amount (estimates never auto)
     "fx_spread_bp": 150,                   # max deviation between bank-credited INR and invoice value at the rate table (1.5%)
     "foreign_bank_charge_max_minor": 6000, # intermediary/correspondent charges deducted from foreign receipts (e.g. $60)
     "straight_through_release": False,  # auto-release posting batches without a human
@@ -500,6 +500,19 @@ class ExchangeRate(Base):
     rate_micro: Mapped[int] = mapped_column(BigInteger)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     __table_args__ = (UniqueConstraint("currency", "rate_date"),)
+
+
+class JobRun(Base):
+    """One row per (job, time-slot). The unique constraint is the lock: two workers cannot run the same slot."""
+    __tablename__ = "job_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(60), index=True)
+    slot: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(12), default="running")   # running | ok | failed
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    __table_args__ = (UniqueConstraint("name", "slot"),)
 
 
 # ---------------------------------------------------------------- tax

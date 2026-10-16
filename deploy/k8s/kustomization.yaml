@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: cashapp
+resources: [namespace.yaml, configmap.yaml, api.yaml, worker.yaml, web.yaml, networkpolicy.yaml, pdb.yaml, ingress.yaml]
+# Pin real image digests/tags for your registry (an Indian-region registry if your policy requires it). Never use :latest.
+images:
+  - { name: cashapp-api, newName: registry.example.in/cashapp/api, newTag: "0.2.0" }
+  - { name: cashapp-web, newName: registry.example.in/cashapp/web, newTag: "0.2.0" }

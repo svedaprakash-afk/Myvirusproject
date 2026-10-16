@@ -68,6 +68,13 @@ class ProfileIn(BaseModel):
     profile: dict
 
 
+@router.get("/bank-templates")
+def bank_templates(user: User = Depends(require("view"))):
+    from ..ingestion.bank_templates import BANK_TEMPLATES
+
+    return [{"name": k, "note": v["note"], "profile": v["profile"], "verified": False} for k, v in BANK_TEMPLATES.items()]
+
+
 @router.put("/bank-accounts/{bid}/profile")
 def set_profile(bid: int, body: ProfileIn, user: User = Depends(require("configure", "ingest")), db: Session = Depends(get_db)):
     b = _bank(db, user, bid)
@@ -277,3 +284,50 @@ def upsert_rates(body: list[RateIn], user: User = Depends(require("fx")), db: Se
         n += 1
     audit.log(db, user.name, "fx.rates_upserted", "ExchangeRate", "-", None, {"count": n, "currencies": sorted({r.currency.upper() for r in body})}, user.id)
     return {"upserted": n}
+
+
+# ------------------------------------------------------------------------------------------------ FX reference-rate feed + jobs
+@router.get("/fx-rates/feed")
+def fx_feed_status(user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from urllib.parse import urlparse
+
+    from ..models import JobRun
+
+    last = db.execute(select(JobRun).where(JobRun.name == "fx_fetch").order_by(JobRun.id.desc()).limit(1)).scalars().first()
+    host = urlparse(config.settings.fx_feed_url).hostname if config.settings.fx_feed_url else None
+    return {"configured": bool(host), "host": host, "currencies": list(config.settings.fx_feed_currencies), "source": "FBIL reference rate (published as the RBI reference rate since 2018)",
+            "egress_allowed": egress_allowed(host) if host else None,
+            "last_run": None if not last else {"slot": last.slot, "status": last.status, "at": S.d(last.finished_at or last.started_at), "detail": last.detail}}
+
+
+@router.post("/fx-rates/fetch")
+def fx_fetch(user: User = Depends(require("fx")), db: Session = Depends(get_db)):
+    from .. import fxfeed
+
+    try:
+        return fxfeed.run_feed(db, user.name, user.id)
+    except EgressBlocked as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"Rate feed failed: {e}")
+
+
+@router.post("/fx-rates/import")
+async def fx_import(file: UploadFile = File(...), as_of: date | None = Form(None), user: User = Depends(require("fx")), db: Session = Depends(get_db)):
+    """Upload the file downloaded from FBIL's site (CSV / TXT / HTML / XLSX). Same parser, same sanity checks as the automatic feed."""
+    from .. import fxfeed
+
+    parsed = fxfeed.parse_reference_rates(await _read(file), file.filename or "", as_of=as_of or date.today())
+    if not parsed.rates:
+        raise HTTPException(422, "No recognisable rates found. " + ("; ".join(parsed.skipped[:3]) or "Expected rows with a currency (USD/EUR/GBP/JPY), a date and a rate."))
+    return fxfeed.store_rates(db, parsed, "fbil_upload", user.name, user.id)
+
+
+@router.get("/jobs")
+def jobs(limit: int = 50, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from ..models import JobRun
+
+    return [{"name": j.name, "slot": j.slot, "status": j.status, "started_at": S.d(j.started_at), "finished_at": S.d(j.finished_at), "detail": j.detail}
+            for j in db.execute(select(JobRun).order_by(JobRun.id.desc()).limit(min(limit, 200))).scalars()]

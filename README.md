@@ -16,6 +16,9 @@ ERP open items into matched, audit-ready cash postings, with exceptions, maker-c
 - **Multi-currency**: foreign-currency invoices with booking rates, FX rate table, same-currency foreign receipts (intermediary bank
   charges handled), **cross-currency** receipts (e.g. USD invoice paid in INR from the bank's inward-remittance narration or the rate
   table), realised FX gain/loss computed into balanced base-currency journals, per-currency tolerances, base-currency dashboards.
+- **FX reference-rate feed**: the RBI reference rate is now computed and published by **FBIL**; a tolerant parser (CSV/TXT/HTML/XLSX, JPY per 100), daily scheduled fetch after 14:00 IST with bounded retries, manual file import, a 5% day-on-day circuit breaker, stale-rate warnings. **The live URL/layout is unverified — see `docs/DEPLOYMENT_INDIA.md`.**
+- **Worker**: `python -m app.cli worker` runs FX fetch, inbox polling, bank-feed sync and matching on schedule; slot-locked so replicas never double-run.
+- **Cloud-agnostic India deployment**: hardened containers, Kubernetes manifests with default-deny egress, compose file, CI workflow (`deploy/`).
 - **Data residency**: strict mode (Indian region required, egress allow-list, LLM off by default) + `docs/DEPLOYMENT_INDIA.md`.
 - **Narration parsing**: NEFT/RTGS/IMPS/UPI/cheque/ACH/SWIFT layouts used by the major banks (23-case corpus), invoice ranges.
 - **Understand Indian narrations**: NEFT/RTGS/IMPS/UPI/cheque/ACH, UTR/RRN, payer names, VPAs, IFSC, virtual accounts (VAN).
@@ -39,8 +42,8 @@ cd ../frontend && npm install && npm run dev       # http://localhost:5173
 ```
 Demo logins (password `demo1234`): analyst@ / manager@ / treasury@ / cfo@ / auditor@ / admin@`meridian.example`.
 
-Tests: `cd backend && pytest` (160) and `cd frontend && npm test && npm run build`.
-Production: `docker compose up` with `JWT_SECRET` set; create the first user with `python -m app.cli create-user`.
+Tests: `cd backend && pytest` (216) and `cd frontend && npm test && npm run build`.
+Production: `kubectl apply -k deploy/k8s` (see `deploy/README.md`) or `docker compose up` with `JWT_SECRET`, `DEPLOY_REGION` set; create the first user with `python -m app.cli create-user`.
 
 ## Architecture
 `ingestion/` parsers + idempotent persistence -> `matching/` (context, identify, references, subset, tds, scoring, engine, actions) ->
@@ -53,9 +56,8 @@ React/TypeScript UI in `frontend/`. Money is integer paise end to end.
   mapped CSV, signed webhook, IMAP) are tested with fakes/temp files only. Native SFTP polling and bank-specific APIs are *planned* and refuse
   to run; Tally/Zoho/Business Central/SAP have no dedicated adapters (use mapped CSV or the webhook). e-invoice portal and GST/TRACES/26AS
   integrations are not built.
-- **Multi-currency scope**: 2-decimal currencies only (no JPY-style 0-decimal handling); rates are entered by you (no feed); realised FX is
-  computed from booking vs settlement rates and cross-currency matches never auto-approve unless you opt in *and* the payer stated the
-  foreign amount. Manual cross-currency allocation is refused. No unrealised-FX revaluation.
+- **Multi-currency scope**: 2-decimal currencies only (no JPY-style 0-decimal handling); rates come from the FBIL feed/import or manual entry; realised FX is
+  computed from booking vs settlement rates. Cross-currency matches auto-approve (default ON) only when the payer stated the foreign amount; estimates never do. Manual cross-currency allocation is refused. No unrealised-FX revaluation.
 - **Data residency is only partly enforceable in software** — see `docs/DEPLOYMENT_INDIA.md`.
 - Statutory TDS rates are **defaults for matching hints**, configurable per customer; confirm with your tax team.
 - Not built: schema migrations (Alembic), SSO/MFA, field-level encryption at rest, background job queue, multi-currency FX revaluation,

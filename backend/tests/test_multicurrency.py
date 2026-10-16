@@ -102,9 +102,8 @@ def test_inward_remittance_in_inr_for_usd_invoice_uses_stated_foreign_amount(w):
     rate(w, "USD", "83.40")
     w.run(t)
     p = prop(w, t)
-    assert p.strategy == "cross_currency" and p.settle_currency == "USD" and p.status == ProposalStatus.pending_review
-    assert any("Cross-currency" in g for g in p.guardrails) and not any("estimated" in g for g in p.guardrails)
-    actions.apply_proposal(w.db, None, p, "a", w.users["ar_analyst"].id)
+    assert p.strategy == "cross_currency" and p.settle_currency == "USD" and p.status == ProposalStatus.auto_approved
+    assert p.guardrails == [] and p.auto, "payer-stated foreign amount + default config => straight-through"
     assert inv.open_minor == 0
     b = posting.build_batch(w.db, w.e, w.users["ar_manager"])
     bank = next(l for l in b.lines if l.line_type == "bank_receipt")
@@ -115,16 +114,22 @@ def test_inward_remittance_in_inr_for_usd_invoice_uses_stated_foreign_amount(w):
     assert sum(l.base_debit_minor for l in b.lines) == sum(l.base_credit_minor for l in b.lines)
 
 
-def test_cross_currency_auto_approval_is_opt_in_and_never_when_estimated(w):
-    w.e.config = {**w.e.config, "auto_approve_cross_currency": True}
+def test_cross_currency_auto_is_default_but_can_be_switched_off(w):
+    w.e.config = {**w.e.config, "auto_approve_cross_currency": False}
     c = globex(w)
-    inv = w.invoice(c, "EXP/26-27/0006", 10_000_00, gst_pct=0, currency="USD", booking_rate=82_500_000)
+    w.invoice(c, "EXP/26-27/0006", 10_000_00, gst_pct=0, currency="USD", booking_rate=82_500_000)
     t = w.credit(83_400_000, "INWARD REMITTANCE USD 10,000.00 FROM GLOBEX CORPORATION-FIRC 1-SWIFT X", d=D)
     rate(w, "USD", "83.40")
     w.run(t)
-    assert prop(w, t).auto, "stated foreign amount + opt-in => straight-through allowed"
-    inv2 = w.invoice(c, "EXP/26-27/0007", 7_000_00, gst_pct=0, currency="USD", booking_rate=82_500_000)
+    p = prop(w, t)
+    assert not p.auto and any("Cross-currency" in g for g in p.guardrails)
+
+
+def test_estimated_foreign_amount_never_auto_approves_even_with_cross_currency_auto_on(w):
+    c = globex(w)
+    w.invoice(c, "EXP/26-27/0007", 7_000_00, gst_pct=0, currency="USD", booking_rate=82_500_000)
     t2 = w.credit(58_380_000, "NEFT-HDFCN26274000901-GLOBEX CORPORATION-EXP/26-27/0007", d=D)       # no foreign amount stated
+    rate(w, "USD", "83.40")
     w.run(t2)
     p2 = prop(w, t2)
     assert p2.strategy == "cross_currency" and not p2.auto and any("estimated" in g for g in p2.guardrails)

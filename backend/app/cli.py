@@ -18,13 +18,27 @@ def main(argv=None) -> int:
     a = sub.add_parser("create-user")
     a.add_argument("email"); a.add_argument("--name", required=True); a.add_argument("--role", choices=[r.value for r in Role], default="admin")
     sub.add_parser("seed-demo")
+    sub.add_parser("fetch-fx", help="fetch the FBIL/RBI reference rates once (for cron)")
+    sub.add_parser("worker", help="run scheduled jobs: FX fetch, inbox polling, bank-feed sync, matching")
     args = ap.parse_args(argv)
     assert_safe_for_production()
     Base.metadata.create_all(engine)
     if args.cmd == "init-db":
         print("tables ready"); return 0
+    if args.cmd == "worker":
+        import logging
+
+        from . import jobs
+
+        logging.basicConfig(level=logging.INFO)
+        jobs.loop(SessionLocal)
+        return 0
     db = SessionLocal()
     try:
+        if args.cmd == "fetch-fx":
+            from . import fxfeed
+
+            print(fxfeed.run_feed(db, "cli"))
         if args.cmd == "create-user":
             pw = getpass.getpass("Password (min 12 chars): ")
             if len(pw) < 12:

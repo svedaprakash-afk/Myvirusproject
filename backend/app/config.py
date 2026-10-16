@@ -23,6 +23,10 @@ class Settings:
     residency_strict: bool = field(default_factory=lambda: os.getenv("DATA_RESIDENCY_STRICT", "0") == "1")
     deploy_region: str = field(default_factory=lambda: os.getenv("DEPLOY_REGION", ""))
     allowed_egress: tuple[str, ...] = field(default_factory=lambda: tuple(h.strip().lower() for h in os.getenv("ALLOWED_EGRESS_HOSTS", "").split(",") if h.strip()))
+    # FX reference-rate feed (FBIL publishes the RBI reference rate). The URL is configuration, not code: it could not be verified
+    # from the build environment, so the operator must point it at the live publication and confirm one fetch.
+    fx_feed_url: str = field(default_factory=lambda: os.getenv("FX_FEED_URL", ""))
+    fx_feed_currencies: tuple[str, ...] = field(default_factory=lambda: tuple(c.strip().upper() for c in os.getenv("FX_FEED_CURRENCIES", "USD,EUR,GBP,JPY").split(",") if c.strip()))
     feed_root: str = field(default_factory=lambda: os.getenv("FEED_ROOT", "./feeds"))
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", "./exports"))
 
@@ -33,6 +37,7 @@ settings = Settings()
 INDIA_REGIONS = {"ap-south-1", "ap-south-2",                       # AWS Mumbai, Hyderabad
                  "centralindia", "southindia", "westindia",       # Azure
                  "asia-south1", "asia-south2",                    # GCP Mumbai, Delhi
+                 "ap-mumbai-1", "ap-hyderabad-1",                   # Oracle Cloud
                  "in-west", "in-central", "on-prem-india"}        # generic / self-hosted labels
 
 

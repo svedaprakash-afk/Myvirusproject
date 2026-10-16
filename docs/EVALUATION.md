@@ -23,3 +23,8 @@ real data will find more.
 - `tests/narration_corpus.py`: 23 narration layouts modelled on formats used by major Indian banks (NEFT/RTGS/IMPS/UPI/cheque/ACH/SWIFT, SBI/ICICI/HDFC/Axis/Kotak/Yes styles). These are written from knowledge of the formats, **not** taken from real statements; a real bank's file may differ, which is exactly what the profile preview and custom narration rules are for.
 - Multi-currency, mailbox, feed, mapped-export, webhook and residency behaviour is covered by unit/integration tests using fakes (fake IMAP server, fake HTTP transports, temp directories). None has been run against a real bank, ERP, mail server or cloud account.
 - The synthetic-ground-truth harness (`python -m app.seed.evaluate`) covers INR matching only; the foreign-currency scenarios in the demo data are exercised by tests, not scored.
+
+## Third iteration
+- Bank layouts (HDFC, ICICI, SBI, Axis, Kotak, Yes, IDFC FIRST, PNB; BoB/Canara/IndusInd templates only) and 40 narration styles were written **from memory** and are marked unverified in the UI. `tests/test_bank_layouts.py` passing means the parser matches those recollections.
+- The FBIL parser is tested on fixtures written from secondary descriptions; the live format is unverified.
+- Scheduling (FX window, retries, slot locks, inbox/bank sync) is tested with injected clocks and fake transports.

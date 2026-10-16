@@ -1,0 +1,51 @@
+# Defence in depth for data residency. The application already refuses non-allow-listed hosts; this makes the network enforce it.
+# Standard NetworkPolicy matches CIDRs, not hostnames. Replace the placeholder CIDRs with your DB subnet and the IP ranges of
+# your ERP / mailbox / bank / FBIL endpoints. Where your CNI supports FQDN policies (Cilium, Calico Enterprise, cloud-native),
+# prefer those and keep this file as the baseline.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: default-deny-all }
+spec: { podSelector: {}, policyTypes: [Ingress, Egress] }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: allow-dns }
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ namespaceSelector: {}, podSelector: { matchLabels: { k8s-app: kube-dns } } }]
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: web-to-api }
+spec:
+  podSelector: { matchLabels: { app: api } }
+  policyTypes: [Ingress]
+  ingress: [{ from: [{ podSelector: { matchLabels: { app: web } } }], ports: [{ protocol: TCP, port: 8000 }] }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: ingress-to-web }
+spec:
+  podSelector: { matchLabels: { app: web } }
+  policyTypes: [Ingress, Egress]
+  ingress: [{ ports: [{ protocol: TCP, port: 8080 }] }]
+  egress: [{ to: [{ podSelector: { matchLabels: { app: api } } }], ports: [{ protocol: TCP, port: 8000 }] }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: backend-egress-allowlist }
+spec:
+  podSelector: { matchLabels: { tier: backend } }
+  policyTypes: [Egress]
+  egress:
+    - to: [{ ipBlock: { cidr: 10.20.30.0/24 } }]        # PLACEHOLDER: managed PostgreSQL subnet in your Indian region
+      ports: [{ protocol: TCP, port: 5432 }]
+    - to: [{ ipBlock: { cidr: 203.0.113.10/32 } }]      # PLACEHOLDER: ERP / webhook endpoint
+      ports: [{ protocol: TCP, port: 443 }]
+    - to: [{ ipBlock: { cidr: 203.0.113.20/32 } }]      # PLACEHOLDER: mailbox (IMAPS)
+      ports: [{ protocol: TCP, port: 993 }]
+    - to: [{ ipBlock: { cidr: 203.0.113.30/32 } }]      # PLACEHOLDER: FBIL / bank API endpoints
+      ports: [{ protocol: TCP, port: 443 }]

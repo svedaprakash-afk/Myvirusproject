@@ -93,8 +93,8 @@ def _seed_export_business(db: Session, e: LegalEntity, banks: dict) -> dict:
     r_usd, r_eur = 83.0, 90.5
     for k in range(240, -1, -1):
         d = today - timedelta(days=k)
-        r_usd += rng.uniform(-0.12, 0.12)
-        r_eur += rng.uniform(-0.15, 0.15)
+        r_usd += rng.uniform(-0.12, 0.12) - 0.03 * (r_usd - 83.0)    # mean-reverting so demo rates stay realistic
+        r_eur += rng.uniform(-0.15, 0.15) - 0.03 * (r_eur - 90.5)
         if d.weekday() < 5:
             db.add(ExchangeRate(currency="USD", rate_date=d, rate_micro=parse_rate(f"{r_usd:.4f}"), source="seed"))
             db.add(ExchangeRate(currency="EUR", rate_date=d, rate_micro=parse_rate(f"{r_eur:.4f}"), source="seed"))

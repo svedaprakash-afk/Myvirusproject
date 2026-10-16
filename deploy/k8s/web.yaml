@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: web, labels: { app: web } }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: web } }
+  template:
+    metadata: { labels: { app: web, tier: frontend } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: web
+          image: cashapp-web
+          ports: [{ containerPort: 8080, name: http }]
+          readinessProbe: { httpGet: { path: /, port: http }, periodSeconds: 10 }
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 300m, memory: 128Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: cache, mountPath: /tmp }]
+      volumes: [{ name: cache, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: web }
+spec: { selector: { app: web }, ports: [{ port: 80, targetPort: http, name: http }] }

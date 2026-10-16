@@ -106,6 +106,7 @@ def summary(db: Session, entity_id: int, today: date | None = None) -> dict:
         "base_currency": cv.base,
         "missing_rates": sorted(cv.missing),   # currencies present in the data with no rate: their amounts are excluded from totals
         "foreign_exposure": _exposure(open_ar, cv),
+        "stale_rates": __import__("app.fxfeed", fromlist=["x"]).stale_currencies(db, entity_id, today),
     }
 
 

@@ -44,8 +44,9 @@ function Banks() {
   const [id, setId] = useState<number | null>(null);
   const bid = id ?? banks.data?.[0]?.id;
   const setup = useAsync(() => (bid ? api.get<any>(`/bank-accounts/${bid}/setup`) : Promise.resolve(null)), [bid]);
-  const [prof, setProf] = useState(""), [feed, setFeed] = useState(""), [pv, setPv] = useState<any>(null), [sync, setSync] = useState<any>(null);
+  const [tplNote, setTplNote] = useState(""), [prof, setProf] = useState(""), [feed, setFeed] = useState(""), [pv, setPv] = useState<any>(null), [sync, setSync] = useState<any>(null);
   const file = useRef<HTMLInputElement>(null);
+  const tpls = useAsync(() => api.get<any[]>("/bank-templates"), []);
   const { run, busy } = useAction();
   // Reset the editors only when the SAVED data actually changes (app-wide refreshes re-fetch identical data and must not wipe unsaved edits).
   const setupKey = JSON.stringify(setup.data);
@@ -66,7 +67,10 @@ function Banks() {
         <div className="card">
           <Field label="Bank account"><select value={bid ?? ""} onChange={(e) => setId(Number(e.target.value))}>{banks.data.map((b) => <option key={b.id} value={b.id}>{b.bank_name} · {b.currency}</option>)}</select></Field>
           <h2>1 · Statement profile — how to read this bank's files</h2>
-          <div className="row mb"><select aria-label="Profile template" onChange={(e) => e.target.value && setProf(pretty(PROFILE_TEMPLATES[e.target.value]))} value=""><option value="">Insert a template…</option>{Object.keys(PROFILE_TEMPLATES).map((k) => <option key={k}>{k}</option>)}</select></div>
+          <div className="row mb"><select aria-label="Profile template" onChange={(e) => { const v = e.target.value; if (!v) return; const t = tpls.data?.find((x) => x.name === v); setProf(pretty(t ? t.profile : PROFILE_TEMPLATES[v])); setTplNote(t?.note ?? ""); }} value=""><option value="">Insert a template…</option>
+      <optgroup label="Banks (written from memory — verify with Preview)">{tpls.data?.map((t) => <option key={t.name}>{t.name}</option>)}</optgroup>
+      <optgroup label="Patterns">{Object.keys(PROFILE_TEMPLATES).map((k) => <option key={k}>{k}</option>)}</optgroup></select></div>
+          {tplNote && <div className="note warn">{tplNote} <b>Unverified against a real file — run Preview.</b></div>}
           <Json label="Profile (JSON)" value={prof} onChange={setProf} rows={11} hint="Keys: format, delimiter, encoding, skip_rows, columns{date,narration,debit,credit,amount,drcr,balance,ref,value_date}, date_format, currency, invert_direction, narration_rules[{pattern,utr,payer,ifsc,vpa,channel,kind}]" />
           <Field label="Sample statement file"><input ref={file} type="file" accept=".csv,.xlsx,.xml,.txt,.sta" /></Field>
           <div className="row wrap"><button className="btn" disabled={busy} onClick={() => preview(false)}>Detect columns</button><button className="btn" disabled={busy} onClick={() => preview(true)}>Preview with this profile</button>
@@ -170,20 +174,43 @@ function Inbox() {
 }
 
 function Fx() {
-  const { can } = useApp();
+  const { can, toast } = useApp();
   const r = useAsync(() => api.get<any[]>(`/fx-rates?limit=60`), []);
-  const [text, setText] = useState(""); const { run, busy } = useAction();
+  const feed = useAsync(() => api.get<any>(`/fx-rates/feed`), []);
+  const [text, setText] = useState(""); const { run, busy } = useAction(); const file = useRef<HTMLInputElement>(null); const [res, setRes] = useState<any>(null);
   const ok = can("treasury", "finance_head", "admin");
   const submit = () => {
     const rows = text.split("\n").map((l) => l.trim()).filter(Boolean).map((l) => { const [currency, rate_date, rate] = l.split(/[,\s]+/); return { currency, rate_date, rate }; });
     run(() => api.post<any>("/fx-rates", rows), (x) => `${x.upserted} rates saved`).then(() => { setText(""); r.reload(); });
   };
+  const upload = async () => {
+    const f = file.current?.files?.[0]; if (!f) return toast("Choose the file downloaded from FBIL first", true);
+    const fd = new FormData(); fd.append("file", f);
+    const x = await run(() => api.upload<any>("/fx-rates/import", fd), (x) => `${x.stored} rates stored, ${x.rejected.length} held for review`);
+    if (x) { setRes(x); r.reload(); feed.reload(); }
+  };
+  const f = feed.data;
   return (
     <div className="grid g2">
-      <div className="card"><h2>Add rates</h2>
-        <Field label="One per line: CURRENCY, YYYY-MM-DD, rate" hint="Rate = ₹ per 1 unit (e.g. USD, 2026-10-15, 83.4521). Use your bank's TT-buying / RBI reference rate consistently; the platform only uses what you enter."><textarea className="mono" value={text} onChange={(e) => setText(e.target.value)} placeholder={"USD, 2026-10-15, 83.4521\nEUR, 2026-10-15, 90.1200"} /></Field>
-        <button className="btn primary" disabled={!ok || busy || !text.trim()} onClick={submit}>Save rates</button>{!ok && <div className="note warn mt">Treasury, finance heads and admins maintain FX rates.</div>}
-        <p className="faint" style={{ fontSize: 12 }}>Rates drive realised-FX posting, cross-currency matching and dashboard conversion. A receipt with no available rate is refused at posting, never guessed.</p></div>
+      <div className="grid">
+        <div className="card"><h2>Reference-rate feed</h2>
+          <p className="muted" style={{ marginTop: 0 }}>The “RBI reference rate” is computed and published by <b>FBIL</b> (Financial Benchmarks India) on weekdays, around 1 pm IST. The worker fetches it daily after 2 pm IST and retries until it succeeds.</p>
+          {!f ? <Loading rows={2} /> : <table><tbody>
+            <tr><td className="muted">Source</td><td>{f.source}</td></tr>
+            <tr><td className="muted">Feed URL host</td><td>{f.configured ? <>{f.host} {f.egress_allowed === false && <Chip tone="bad">blocked by residency allow-list</Chip>}</> : <Chip tone="warn">not configured (set FX_FEED_URL)</Chip>}</td></tr>
+            <tr><td className="muted">Currencies</td><td>{f.currencies.join(", ")}</td></tr>
+            <tr><td className="muted">Last run</td><td>{f.last_run ? <><StatusChip s={f.last_run.status === "ok" ? "resolved" : "failed"} /> {f.last_run.slot} {f.last_run.detail?.error && <span style={{ color: "var(--bad)" }}>{f.last_run.detail.error}</span>}</> : <span className="muted">never</span>}</td></tr></tbody></table>}
+          <div className="row mt"><button className="btn primary" disabled={!ok || busy || !f?.configured} onClick={() => run(() => api.post<any>("/fx-rates/fetch"), (x) => `${x.stored} stored, ${x.rejected.length} held for review`).then((x) => { x && setRes(x); r.reload(); feed.reload(); })}>Fetch now</button></div>
+          <div className="note warn mt"><b>Unverified:</b> FBIL's exact URL and file layout could not be confirmed when this was built. After pointing FX_FEED_URL at the live publication, run “Fetch now” once and check the rates below against fbil.org.in. Anything moving more than 5% in a day is held for review, never stored silently.</div>
+        </div>
+        <div className="card"><h2>Or upload the file you downloaded</h2>
+          <input type="file" ref={file} accept=".csv,.txt,.xlsx,.html,.htm" /><div className="row mt"><button className="btn" disabled={!ok || busy} onClick={upload}>Import file</button></div>
+          {res && <div className="mt"><b>{res.stored}</b> stored of {res.parsed} parsed.{res.rejected?.map((x: string, i: number) => <div key={i} className="note bad">{x}</div>)}{res.skipped?.length > 0 && <div className="faint" style={{ fontSize: 12 }}>Skipped lines: {res.skipped.length}</div>}</div>}
+        </div>
+        <div className="card"><h2>Add rates manually</h2>
+          <Field label="One per line: CURRENCY, YYYY-MM-DD, rate" hint="₹ per 1 unit (e.g. USD, 2026-10-15, 83.4521)."><textarea className="mono" value={text} onChange={(e) => setText(e.target.value)} placeholder={"USD, 2026-10-15, 83.4521"} /></Field>
+          <button className="btn primary" disabled={!ok || busy || !text.trim()} onClick={submit}>Save rates</button>{!ok && <div className="note warn mt">Treasury, finance heads and admins maintain FX rates.</div>}</div>
+      </div>
       <div className="card flush">{!r.data ? <Loading /> : <table><thead><tr><th>Date</th><th>Currency</th><th className="num">₹ per unit</th><th>Source</th></tr></thead><tbody>{r.data.map((x) => <tr key={x.id}><td>{date(x.rate_date)}</td><td>{x.currency}</td><td className="num">{x.rate.toFixed(4)}</td><td className="muted">{x.source}</td></tr>)}</tbody></table>}</div>
     </div>
   );

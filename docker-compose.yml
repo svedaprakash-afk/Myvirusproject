@@ -6,7 +6,7 @@ services:
     volumes: [pgdata:/var/lib/postgresql/data]
   api:
     build: ./backend
-    environment:
+    environment: &apienv
       DATABASE_URL: postgresql+psycopg://postgres:change-me@db/cashapp
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a long random value}
       APP_ENV: prod
@@ -18,10 +18,17 @@ services:
       DATA_RESIDENCY_STRICT: "1"
       DEPLOY_REGION: ${DEPLOY_REGION:?set DEPLOY_REGION, e.g. ap-south-1}
       ALLOWED_EGRESS_HOSTS: ${ALLOWED_EGRESS_HOSTS:-}
+      FX_FEED_URL: ${FX_FEED_URL:-}
     volumes: [exports:/data/exports, feeds:/data/feeds]
     depends_on: [db]
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.cli", "worker"]
+    environment: *apienv
+    volumes: [exports:/data/exports, feeds:/data/feeds]
+    depends_on: [api]
   web:
     build: ./frontend
-    ports: ["8080:80"]
+    ports: ["8080:8080"]
     depends_on: [api]
 volumes: { pgdata: {}, exports: {}, feeds: {} }

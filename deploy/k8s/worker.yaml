@@ -1,0 +1,25 @@
+# Scheduled jobs: FX reference-rate fetch, remittance-inbox polling, bank-feed sync, matching. Safe to run >1 replica
+# (each time-slot is claimed in the database exactly once), but 1 is enough for normal volumes.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: worker, labels: { app: worker } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: worker } }
+  template:
+    metadata: { labels: { app: worker, tier: backend } }
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: worker
+          image: cashapp-api
+          command: ["python", "-m", "app.cli", "worker"]
+          envFrom: [{ configMapRef: { name: cashapp-config } }, { secretRef: { name: cashapp-secrets } }]
+          resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 500m, memory: 768Mi } }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: data, mountPath: /data }, { name: tmp, mountPath: /tmp }]
+          readinessProbe: { exec: { command: ["python", "-c", "import app.main"] }, initialDelaySeconds: 10, periodSeconds: 60 }
+      volumes:
+        - { name: data, persistentVolumeClaim: { claimName: cashapp-data } }
+        - { name: tmp, emptyDir: {} }

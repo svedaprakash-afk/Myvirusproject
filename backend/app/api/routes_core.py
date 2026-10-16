@@ -71,6 +71,9 @@ class ConfigIn(BaseModel):
     auto_approve_max_minor: int | None = Field(None, ge=0)
     auto_approve_enabled: bool | None = None
     auto_approve_amount_only: bool | None = None
+    auto_approve_cross_currency: bool | None = None
+    fx_spread_bp: int | None = Field(None, ge=10, le=1000)
+    foreign_bank_charge_max_minor: int | None = Field(None, ge=0, le=1_000_000)
     straight_through_release: bool | None = None
     sla_hours: int | None = Field(None, ge=1, le=720)
     max_subset_size: int | None = Field(None, ge=2, le=12)

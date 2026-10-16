@@ -27,6 +27,7 @@ export default function Dashboard() {
         {can("admin") && <button className="btn" disabled={busy} onClick={() => { if (confirm("Replace ALL data with the synthetic demo tenant?")) run(() => api.post("/demo/seed"), "Demo data loaded — sign in again to refresh roles"); }}>Reset demo data</button>}
       </PageHead>
       {d.missing_rates?.length > 0 && <div className="note bad mb" role="alert"><b>Missing exchange rates for {d.missing_rates.join(", ")}.</b> Those amounts are excluded from every total on this page (never added 1:1). Add rates under Settings → FX rates.</div>}
+      {d.stale_rates?.length > 0 && <div className="note warn mb" role="alert"><b>Exchange rates are out of date:</b> {d.stale_rates.map((x: any) => `${x.currency} (${x.latest ? `${x.age_days}d old` : "none"})`).join(", ")}. Realised-FX postings and conversions use the latest rate; <Link to="/connections">fetch or import current rates</Link>.</div>}
       {empty && <div className="card mb"><Empty>No data yet. Go to <Link to="/import">Import</Link> to load open invoices and a bank statement{can("admin") ? ", or use “Reset demo data”" : ""}.</Empty></div>}
 
       <div className="grid g4 mb">

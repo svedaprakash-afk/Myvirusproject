@@ -61,22 +61,23 @@ def parse_date(raw, fmt: str | None = None) -> date | None:
 
 # header synonyms -> canonical column
 _SYN = {
-    "date": ["txn date", "transaction date", "date", "tran date", "post date", "posting date", "trans date", "txn dt"],
+    "date": ["txn date", "transaction date", "date", "tran date", "post date", "posting date", "trans date", "txn dt", "transaction dt"],
     "value_date": ["value date", "value dt", "val date", "value dt."],
     "narration": ["narration", "description", "particulars", "transaction remarks", "remarks", "transaction particulars",
-                  "details", "transaction details"],
+                  "details", "transaction details", "description/narration", "narration/description"],
     "ref": ["chq./ref.no.", "chq/ref no", "ref no", "reference no", "cheque no", "chq no", "ref no./cheque no.",
             "chq./ref no.", "reference", "utr", "utr no", "utr number", "instrument no"],
-    "debit": ["withdrawal amt.", "withdrawal", "debit", "dr", "withdrawals", "debit amount", "withdrawal amount", "dr amount"],
-    "credit": ["deposit amt.", "deposit", "credit", "cr", "deposits", "credit amount", "deposit amount", "cr amount"],
+    "debit": ["withdrawal amt.", "withdrawal", "debit", "dr", "withdrawals", "debit amount", "withdrawal amount", "dr amount", "withdrawal amount(inr)", "withdrawals", "withdrawal (dr)", "withdrawal amt", "debit amt", "debit(dr)"],
+    "credit": ["deposit amt.", "deposit", "credit", "cr", "deposits", "credit amount", "deposit amount", "cr amount", "deposit amount(inr)", "deposits", "deposit (cr)", "deposit amt", "credit amt", "credit(cr)"],
     "amount": ["amount", "txn amount", "transaction amount"],
     "drcr": ["dr/cr", "cr/dr", "type", "txn type", "transaction type"],
-    "balance": ["closing balance", "balance", "running balance", "available balance", "bal"],
+    "balance": ["closing balance", "balance", "running balance", "available balance", "bal", "balance(inr)", "closing bal"],
 }
 
 
 def _norm_h(h) -> str:
-    return re.sub(r"\s+", " ", str(h or "").strip().lower())
+    t = re.sub(r"\s+", " ", str(h or "").strip().lower())
+    return re.sub(r"\s*([()])\s*", r"\1", t)     # "Withdrawal Amount (INR )" -> "withdrawal amount(inr)"
 
 
 def _map_headers(row: list, custom: dict | None = None) -> dict[str, int] | None:

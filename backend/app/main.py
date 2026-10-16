@@ -32,6 +32,15 @@ async def unhandled(request: Request, exc: Exception):
     return JSONResponse({"detail": "Internal error"}, status_code=500)
 
 
+@app.get("/health/ready")
+def ready():
+    from sqlalchemy import text
+
+    with SessionLocal() as db:
+        db.execute(text("select 1"))
+    return {"ready": True}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "region": settings.deploy_region or None, "residency_strict": settings.residency_strict}

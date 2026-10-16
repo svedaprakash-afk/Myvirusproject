@@ -1,5 +1,7 @@
 # Deploying with Indian data residency
 
+Provider-neutral deployment steps, manifests and the AWS/Azure/GCP/Oracle/on-prem mapping are in [`deploy/README.md`](../deploy/README.md). This page covers the residency controls and obligations.
+
 **Read this first.** The application enforces what *it* can: it will not start outside an Indian region in strict mode and it
 refuses outbound connections to hosts you have not allow-listed. It **cannot** verify where your database, backups, logs, object
 storage or e-mail provider physically are. That is a property of how you deploy it, and the checklist below is yours to complete.
@@ -10,7 +12,7 @@ their service providers; whether it reaches you depends on how you use this syst
 ## What the software enforces (`DATA_RESIDENCY_STRICT=1`)
 | Control | Behaviour |
 |---|---|
-| Startup | Aborts unless `DEPLOY_REGION` ∈ {ap-south-1, ap-south-2, centralindia, southindia, westindia, asia-south1, asia-south2, in-west, in-central, on-prem-india} |
+| Startup | Aborts unless `DEPLOY_REGION` ∈ {ap-south-1, ap-south-2, centralindia, southindia, westindia, asia-south1, asia-south2, ap-mumbai-1, ap-hyderabad-1, in-west, in-central, on-prem-india} |
 | Egress | Bank REST feeds, ERP webhook, IMAP and the optional LLM extractor can reach **only** hosts in `ALLOWED_EGRESS_HOSTS` (exact host, or `.suffix`) |
 | LLM extraction | Disabled in strict mode unless `api.anthropic.com` is explicitly allow-listed. Remittance text then leaves India — decide deliberately. Matching never needs it |
 | Configuration | Saving an ERP webhook, mailbox or bank feed pointing at a non-allow-listed host is rejected (422) |
@@ -44,3 +46,6 @@ ALLOWED_EGRESS_HOSTS=erp.corp.example.in,imap.corp.example.in,api.yourbank.co.in
 FEED_ROOT=/data/feeds             EXPORT_DIR=/data/exports
 ```
 The Postgres path is provided but **not yet exercised by the automated tests** (they run on SQLite). Run a full pass on Postgres before go-live.
+
+## FX reference-rate feed and residency
+The feed calls the host in `FX_FEED_URL` (FBIL's publication). In strict mode that host must be in `ALLOWED_EGRESS_HOSTS` — adding `www.fbil.org.in` is a deliberate, narrow exception: the call sends no customer data, it only downloads public rates.

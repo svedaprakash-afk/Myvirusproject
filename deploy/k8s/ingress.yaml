@@ -1,0 +1,11 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cashapp
+  annotations: { nginx.ingress.kubernetes.io/proxy-body-size: 30m }
+spec:
+  ingressClassName: nginx            # replace with your controller's class (cloud load balancer, nginx, traefik...)
+  tls: [{ hosts: [cash.corp.example.in], secretName: cashapp-tls }]
+  rules:
+    - host: cash.corp.example.in
+      http: { paths: [{ path: /, pathType: Prefix, backend: { service: { name: web, port: { number: 80 } } } }] }
