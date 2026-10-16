@@ -139,6 +139,16 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
     return c
 
 
+def balance_cash(c: Cand, pay: int) -> None:
+    """Invariant: sum(applied) + unapplied == cash received. Any residue (<= tolerance) becomes a write-off on the largest
+    invoice so each invoice's cleared amount is unchanged and the journal always balances."""
+    diff = pay - (c.applied + c.unapplied)
+    if diff and c.allocs:
+        tgt = max(c.allocs, key=lambda a: abs(a.invoice.open_minor))
+        tgt.applied += diff
+        tgt.writeoff -= diff
+
+
 def base_feats(ctx: Ctx, txn: PaymentTransaction, cust: Customer | None, guess: Guess | None, c: Cand) -> dict:
     pay = txn.receivable_minor
     n = max(len(c.allocs), 1)
@@ -235,6 +245,7 @@ def remittance_candidate(ctx: Ctx, txn, cust: Customer | None, guess: Guess | No
             if abs(short) > tol and short > 0:
                 c.short += short
         if len(c.allocs) == len(stated):
+            balance_cash(c, txn.receivable_minor)
             c.kind = "exact" if not c.short else "partial"
             c.evidence.insert(0, "Customer's remittance advice states the per-invoice split, which sums to the bank credit")
             if c.tds:
@@ -602,7 +613,7 @@ def _propose(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, am
                                       for o in all_c if o is not c][:3]},
         features={k: round(v, 4) for k, v in c.feats.items()}, guardrails=g,
         applied_minor=c.applied, tds_minor=c.tds, writeoff_minor=tol_total, fee_minor=txn.fee_minor, unapplied_minor=c.unapplied,
-        short_minor=c.short, created_by=f"engine:{ctx.model_version}")
+        short_minor=c.short, created_by=f"engine:{ctx.model_version}", auto=auto)
     for a in c.allocs:
         p.allocations.append(MatchAllocation(invoice_id=a.invoice.id, applied_minor=a.applied, tds_minor=a.tds, writeoff_minor=a.writeoff,
                                              tds_section=a.tds_section, tds_rate_bp=a.tds_bp, reference_hit=a.hit))

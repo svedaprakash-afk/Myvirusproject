@@ -17,7 +17,7 @@ from .config import settings
 from .db import get_db
 from .models import Role, User, utcnow
 
-ITER = 200_000
+ITER = int(os.getenv("PBKDF2_ITERATIONS", "200000"))  # lowered only by the test-suite
 
 
 def hash_password(pw: str) -> str:

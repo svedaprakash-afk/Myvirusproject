@@ -190,28 +190,33 @@ def parse_mt940(data: bytes) -> list[RawTxn]:
 
 # ------------------------------------------------------------------ camt.053
 def parse_camt053(data: bytes) -> list[RawTxn]:
-    from lxml import etree
+    """ISO 20022 camt.053. Parsed with defusedxml: bank files are untrusted input (XXE / entity-expansion safe)."""
+    from defusedxml import ElementTree as ET
+    from defusedxml.common import DefusedXmlException
 
-    root = etree.fromstring(data)
-    ns = {"c": root.nsmap.get(None) or "urn:iso:std:iso:20022:tech:xsd:camt.053.001.02"}
+    try:
+        root = ET.fromstring(data)
+    except (ET.ParseError, DefusedXmlException) as e:
+        raise StatementError(f"Invalid or unsafe camt.053 XML: {e}") from e
+    ns_uri = root.tag[1:].split("}")[0] if root.tag.startswith("{") else ""
+    q = (lambda p: "/".join(f"{{{ns_uri}}}{x}" for x in p.split("/"))) if ns_uri else (lambda p: p)
     out: list[RawTxn] = []
-    for ntry in root.iterfind(".//c:Ntry", ns):
-        amt_el = ntry.find("c:Amt", ns)
-        if amt_el is None:
+    for ntry in root.iter(q("Ntry")):
+        amt_el = ntry.find(q("Amt"))
+        if amt_el is None or not (amt_el.text or "").strip():
             continue
-        cd = (ntry.findtext("c:CdtDbtInd", namespaces=ns) or "").upper()
-        bk = ntry.findtext("c:BookgDt/c:Dt", namespaces=ns) or ntry.findtext("c:BookgDt/c:DtTm", namespaces=ns)
-        vl = ntry.findtext("c:ValDt/c:Dt", namespaces=ns)
-        parts = [ntry.findtext("c:AddtlNtryInf", namespaces=ns) or ""]
-        parts += [e.text or "" for e in ntry.iterfind(".//c:RmtInf/c:Ustrd", ns)]
-        parts += [e.text or "" for e in ntry.iterfind(".//c:RltdPties/c:Dbtr/c:Nm", ns)]
-        utr = ntry.findtext(".//c:Refs/c:EndToEndId", namespaces=ns) or ntry.findtext(".//c:Refs/c:UETR", namespaces=ns)
+        cd = (ntry.findtext(q("CdtDbtInd")) or "").upper()
+        bk = ntry.findtext(q("BookgDt/Dt")) or ntry.findtext(q("BookgDt/DtTm"))
+        vl = ntry.findtext(q("ValDt/Dt"))
+        parts = [ntry.findtext(q("AddtlNtryInf")) or ""]
+        parts += [e.text or "" for e in ntry.iter(q("Ustrd"))]
+        parts += [e.text or "" for e in ntry.iter(q("Nm"))]
+        utr = next((e.text for e in ntry.iter(q("EndToEndId")) if e.text), None) or next((e.text for e in ntry.iter(q("UETR")) if e.text), None)
         out.append(RawTxn(
-            txn_date=parse_date(bk[:10]) or date.today(), value_date=parse_date(vl[:10]) if vl else None,
-            amount_minor=to_minor(amt_el.text), direction="credit" if cd == "CRDT" else "debit",
-            narration=" ".join(p for p in parts if p).strip(), currency=amt_el.get("Ccy", "INR"),
-            utr_hint=utr if utr and utr != "NOTPROVIDED" else None,
-            bank_ref=ntry.findtext("c:AcctSvcrRef", namespaces=ns),
+            txn_date=parse_date(bk[:10]) if bk else date.today(), value_date=parse_date(vl[:10]) if vl else None,
+            amount_minor=to_minor(amt_el.text.strip()), direction="credit" if cd == "CRDT" else "debit",
+            narration=" ".join(p.strip() for p in parts if p and p.strip()), currency=amt_el.get("Ccy", "INR"),
+            utr_hint=utr if utr and utr != "NOTPROVIDED" else None, bank_ref=ntry.findtext(q("AcctSvcrRef")),
         ))
     if not out:
         raise StatementError("No <Ntry> entries found in camt.053 file")

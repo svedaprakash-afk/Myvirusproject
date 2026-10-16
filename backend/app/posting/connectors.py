@@ -1,0 +1,87 @@
+"""ERP connector layer. The platform speaks ONE canonical journal; connectors only render it for a target ERP.
+
+Writing a new connector = implement `render()` (and optionally `parse_open_items`). Nothing in matching, workflow or
+posting changes. Shipped here: generic line-level CSV and canonical JSON. Tally/Zoho/Business Central/SAP are planned
+adapters — they are NOT implemented and are listed as such by the API rather than faked.
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+from dataclasses import dataclass
+from typing import Protocol
+
+from ..models import LegalEntity, PostingBatch
+
+
+@dataclass
+class Rendered:
+    filename: str
+    content: bytes
+    content_type: str
+
+
+class ERPConnector(Protocol):
+    name: str
+    label: str
+    status: str  # available | planned
+
+    def render(self, batch: PostingBatch, entity: LegalEntity) -> Rendered: ...
+
+
+def _vouchers(batch: PostingBatch) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for ln in batch.lines:
+        out.setdefault(ln.voucher_no, []).append(ln)
+    return out
+
+
+class GenericCsvConnector:
+    name, label, status = "generic_csv", "Generic line-level CSV", "available"
+
+    def render(self, batch: PostingBatch, entity: LegalEntity) -> Rendered:
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["voucher_no", "posting_date", "line_type", "account", "party_code", "invoice_ref", "debit", "credit", "currency", "narration"])
+        for ln in batch.lines:
+            w.writerow([ln.voucher_no, ln.posting_date.isoformat(), ln.line_type, ln.account, getattr(ln, "_party", "") or "",
+                        getattr(ln, "_inv", "") or "", f"{ln.debit_minor / 100:.2f}" if ln.debit_minor else "",
+                        f"{ln.credit_minor / 100:.2f}" if ln.credit_minor else "", ln.currency, ln.narration])
+        return Rendered(f"cashapp_batch_{batch.id}.csv", buf.getvalue().encode(), "text/csv")
+
+
+class CanonicalJsonConnector:
+    name, label, status = "canonical_json", "Canonical JSON (voucher + settlement references)", "available"
+
+    def render(self, batch: PostingBatch, entity: LegalEntity) -> Rendered:
+        vouchers = []
+        for vno, lines in _vouchers(batch).items():
+            dr = sum(x.debit_minor for x in lines)
+            cr = sum(x.credit_minor for x in lines)
+            vouchers.append({
+                "voucher_no": vno, "date": lines[0].posting_date.isoformat(), "currency": lines[0].currency, "total_debit": dr / 100,
+                "total_credit": cr / 100, "balanced": dr == cr,
+                "lines": [{"type": x.line_type, "account": x.account, "party": getattr(x, "_party", None), "invoice": getattr(x, "_inv", None),
+                           "debit": x.debit_minor / 100, "credit": x.credit_minor / 100, "narration": x.narration} for x in lines],
+            })
+        doc = {"schema": "cashapp.journal/1", "batch_id": batch.id, "idempotency_key": batch.idempotency_key, "legal_entity": entity.name,
+               "gstin": entity.gstin, "vouchers": vouchers}
+        return Rendered(f"cashapp_batch_{batch.id}.json", json.dumps(doc, indent=2).encode(), "application/json")
+
+
+class PlannedConnector:
+    status = "planned"
+
+    def __init__(self, name: str, label: str):
+        self.name, self.label = name, label
+
+    def render(self, batch, entity):  # pragma: no cover - guarded by the API
+        raise NotImplementedError(f"The {self.label} connector is planned but not implemented yet")
+
+
+REGISTRY: dict[str, ERPConnector] = {c.name: c for c in [
+    GenericCsvConnector(), CanonicalJsonConnector(),
+    PlannedConnector("tally_prime", "Tally Prime (XML vouchers)"), PlannedConnector("zoho_books", "Zoho Books (REST)"),
+    PlannedConnector("d365_bc", "Dynamics 365 Business Central (OData)"), PlannedConnector("sap_s4", "SAP S/4HANA (BAPI/OData)"),
+]}

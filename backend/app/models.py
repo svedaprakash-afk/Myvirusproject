@@ -316,6 +316,7 @@ class MatchProposal(Base):
     unapplied_minor: Mapped[int] = mapped_column(BigInteger, default=0)   # overpay / on-account
     short_minor: Mapped[int] = mapped_column(BigInteger, default=0)       # unexplained shortfall
     created_by: Mapped[str] = mapped_column(String(60), default="engine")
+    auto: Mapped[bool] = mapped_column(Boolean, default=False)   # applied straight-through, no human decision
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     decided_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -325,6 +326,7 @@ class MatchProposal(Base):
         back_populates="proposal", cascade="all, delete-orphan"
     )
     txn: Mapped[PaymentTransaction] = relationship()
+    customer: Mapped[Customer | None] = relationship()
 
 
 class MatchAllocation(Base):

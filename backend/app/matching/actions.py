@@ -55,7 +55,7 @@ def apply_proposal(db: Session, ctx, p: MatchProposal, actor: str, actor_id: int
     audit.log(db, actor, "proposal.auto_applied" if auto else "proposal.accepted", "MatchProposal", p.id, p.entity_id,
               {"txn": txn.id, "confidence": p.confidence, "applied_minor": p.applied_minor, "tds_minor": p.tds_minor,
                "writeoff_minor": p.writeoff_minor, "invoices": [a.invoice.number for a in p.allocations]}, actor_id)
-    if not auto:
+    if not auto and p.features:  # manual allocations carry no engine features, so they cannot be a training example
         db.add(MatchFeedback(entity_id=p.entity_id, proposal_id=p.id, label=1, features=p.features, user_id=actor_id))
     db.flush()
 

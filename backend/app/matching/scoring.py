@@ -89,8 +89,9 @@ def retrain_candidate(db: Session, entity_id: int | None = None) -> ScoringModel
     if entity_id:
         q = q.where(MatchFeedback.entity_id == entity_id)
     rows = db.execute(q.order_by(MatchFeedback.id)).scalars().all()
-    if len(rows) < 20:
-        return None
+    pos = sum(r.label for r in rows)
+    if len(rows) < 20 or pos < 10 or len(rows) - pos < 5:
+        return None  # too little (or one-sided) feedback: a model trained on it would only learn the base rate
     samples = [(r.features, r.label) for r in rows]
     cut = int(len(samples) * 0.8)
     train_s, hold = samples[:cut], samples[cut:]
