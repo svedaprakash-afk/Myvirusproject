@@ -8,10 +8,18 @@ data:
   ALLOW_DEMO: "0"
   DATA_RESIDENCY_STRICT: "1"
   DEPLOY_REGION: "ap-south-1"          # set to YOUR Indian region label (see deploy/README.md for accepted values)
-  ALLOWED_EGRESS_HOSTS: "erp.corp.example.in,imap.corp.example.in,www.fbil.org.in"
+  ALLOWED_EGRESS_HOSTS: "erp.corp.example.in,imap.corp.example.in,www.fbil.org.in,s3.ap-south-1.amazonaws.com"
   FX_FEED_URL: ""                      # set to the live FBIL publication after verifying it (docs/DEPLOYMENT_INDIA.md)
   FX_FEED_CURRENCIES: "USD,EUR,JPY,GBP,CNY,AUD,CAD,CHF,HKD,SGD"   # top-10 most traded; FBIL publishes USD/EUR/GBP/JPY only
   FX_CROSS_FEED_URL: ""                # optional: ECB daily euro reference rates (add the host to ALLOWED_EGRESS_HOSTS) to DERIVE the other six
-  EXPORT_DIR: "/data/exports"
-  FEED_ROOT: "/data/feeds"
+  # Exports and the bank-file landing zone live in S3-compatible object storage, so no shared (RWX) volume is needed.
+  STORAGE_BACKEND: "s3"
+  S3_BUCKET: "REPLACE-ME"             # startup FAILS until this is set: a misconfigured store must never silently fall back to a pod's disk
+  S3_PREFIX: "cashapp"
+  S3_REGION: "ap-south-1"             # strict mode requires an Indian region (or an allow-listed custom endpoint)
+  S3_SSE: "aws:kms"                   # AES256 | aws:kms | none (only if the store encrypts at rest itself)
+  S3_KMS_KEY_ID: ""                   # required with aws:kms in strict mode: a key created IN the Indian region
+  S3_ENDPOINT_URL: ""                 # for non-AWS S3 APIs (Oracle, Ceph, MinIO, GCS interop); then also set S3_PATH_STYLE if required
+  S3_PATH_STYLE: "0"
+  # Credentials: use the pod's cloud identity (IRSA / workload identity / instance role). Do NOT put keys in this file.
   CORS_ORIGINS: "https://cash.corp.example.in"

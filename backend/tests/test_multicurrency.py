@@ -169,7 +169,7 @@ def test_tolerance_is_per_currency(w):
 
 # ------------------------------------------------------------------------------------------------ top-10 currencies
 @pytest.mark.parametrize("ccy,rate_,booking", [("JPY", "0.5510", 540_000), ("GBP", "108.10", 107_000_000), ("CNY", "11.60", 11_400_000), ("AUD", "54.50", 54_000_000),
-                                              ("CAD", "60.50", 60_000_000), ("CHF", "94.00", 93_000_000), ("HKD", "10.65", 10_600_000), ("SGD", "62.50", 62_000_000), ("EUR", "90.60", 90_000_000)])
+                                              ("CAD", "60.50", 60_000_000), ("CHF", "94.00", 93_000_000), ("HKD", "10.65", 10_600_000), ("SGD", "62.50", 62_000_000), ("EUR", "90.60", 90_000_000), ("AED", "22.72", 22_600_000)])
 def test_every_top_ten_currency_matches_and_posts_balanced_with_fx(w, ccy, rate_, booking):
     """JPY has no minor unit; it is carried as 1/100 yen like every other currency so arithmetic is uniform (documented limitation: no fractional-yen semantics)."""
     c = w.customer("X9", f"Buyer {ccy} Co")
@@ -189,7 +189,7 @@ def test_every_top_ten_currency_matches_and_posts_balanced_with_fx(w, ccy, rate_
 def test_narration_fx_amount_is_parsed_for_each_top_ten_currency():
     from app.indian import parse_narration
 
-    for ccy in ("USD", "EUR", "JPY", "GBP", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD"):
+    for ccy in ("USD", "EUR", "JPY", "GBP", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD", "AED"):
         r = parse_narration(f"INWARD REMITTANCE {ccy} 12,345.60 FROM BUYER CO-FIRC 1-SWIFT X")
         assert (r.extra.get("fx_ccy"), r.extra.get("fx_minor")) == (ccy, 1234560), ccy
 

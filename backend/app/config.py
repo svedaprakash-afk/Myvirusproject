@@ -28,10 +28,23 @@ class Settings:
     # FX reference-rate feed (FBIL publishes the RBI reference rate). The URL is configuration, not code: it could not be verified
     # from the build environment, so the operator must point it at the live publication and confirm one fetch.
     fx_feed_url: str = field(default_factory=lambda: os.getenv("FX_FEED_URL", ""))
-    fx_feed_currencies: tuple[str, ...] = field(default_factory=lambda: tuple(c.strip().upper() for c in os.getenv("FX_FEED_CURRENCIES", "USD,EUR,JPY,GBP,CNY,AUD,CAD,CHF,HKD,SGD").split(",") if c.strip()))
+    fx_feed_currencies: tuple[str, ...] = field(default_factory=lambda: tuple(c.strip().upper() for c in os.getenv("FX_FEED_CURRENCIES", "USD,EUR,JPY,GBP,CNY,AUD,CAD,CHF,HKD,SGD,AED").split(",") if c.strip()))
     # Optional cross-rate source for currencies FBIL does not publish (it publishes USD, EUR, GBP, JPY). The ECB's daily euro reference
     # rates are used with FBIL's EUR/INR to derive INR rates. Derived rates are NOT official reference rates and are labelled as such.
+    # Currencies hard-pegged to USD by their central bank, as CCY:units-per-USD (AED has been 3.6725 since 1997). Derived from FBIL's USD/INR.
+    # A peg CAN change: this is configuration so a revaluation is a config edit, and the derived rate is labelled as such.
+    fx_pegs: tuple[str, ...] = field(default_factory=lambda: tuple(p.strip() for p in os.getenv("FX_PEGS", "AED:3.6725").split(",") if p.strip()))
     fx_cross_url: str = field(default_factory=lambda: os.getenv("FX_CROSS_FEED_URL", ""))
+    # Object storage for posting exports and the bank-file landing zone. "local" = a directory (single VM / shared volume);
+    # "s3" = any S3-compatible service (AWS S3, Oracle OCI, Ceph, MinIO, GCS interoperability, Indian providers' S3 APIs). Azure Blob is NOT S3-compatible.
+    storage_backend: str = field(default_factory=lambda: os.getenv("STORAGE_BACKEND", "local").lower())
+    s3_bucket: str = field(default_factory=lambda: os.getenv("S3_BUCKET", ""))
+    s3_prefix: str = field(default_factory=lambda: os.getenv("S3_PREFIX", "cashapp").strip("/"))
+    s3_endpoint_url: str = field(default_factory=lambda: os.getenv("S3_ENDPOINT_URL", ""))
+    s3_region: str = field(default_factory=lambda: os.getenv("S3_REGION", ""))
+    s3_sse: str = field(default_factory=lambda: os.getenv("S3_SSE", ""))            # AES256 | aws:kms | none (explicit: store encrypts at rest itself)
+    s3_kms_key_id: str = field(default_factory=lambda: os.getenv("S3_KMS_KEY_ID", ""))
+    s3_path_style: bool = field(default_factory=lambda: os.getenv("S3_PATH_STYLE", "0") == "1")   # MinIO/Ceph usually need path-style
     feed_root: str = field(default_factory=lambda: os.getenv("FEED_ROOT", "./feeds"))
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", "./exports"))
 
@@ -50,11 +63,16 @@ class EgressBlocked(PermissionError):
     pass
 
 
-def egress_allowed(host: str) -> bool:
-    if not settings.residency_strict:
+def egress_allowed_for(cfg, host: str) -> bool:
+    """Is `host` reachable under `cfg`'s residency policy? (Evaluates the config it is given, so configuration can be validated before it is applied.)"""
+    if not cfg.residency_strict:
         return True
     h = (host or "").lower().split(":")[0]
-    return any(h == a or (a.startswith(".") and h.endswith(a)) for a in settings.allowed_egress)
+    return any(h == a or (a.startswith(".") and h.endswith(a)) for a in cfg.allowed_egress)
+
+
+def egress_allowed(host: str) -> bool:
+    return egress_allowed_for(settings, host)
 
 
 def check_egress(url_or_host: str) -> None:

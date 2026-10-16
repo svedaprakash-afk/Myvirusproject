@@ -17,8 +17,11 @@ log = logging.getLogger("cashapp")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_safe_for_production()
-    from . import migrate
+    from . import migrate, storage
 
+    bad = storage.validate_settings(settings)
+    if bad:
+        raise RuntimeError("Storage misconfigured: " + "; ".join(bad))
     migrate.ensure_schema(engine, settings.auto_migrate)
     yield
 

@@ -33,3 +33,9 @@ real data will find more.
 - The whole suite and the migrations were run against a **local PostgreSQL 16**, not just SQLite. That found a real bug SQLite hides (batch-cancel overflowed a `VARCHAR(64)`), now fixed, and drove input-length hardening. It is still a scratch server: not a managed service, not your data, not your network.
 - Top-10 currencies: six of the ten INR rates are derived (FBIL EUR/INR ÷ ECB EUR/currency). Fixtures for the ECB XML were written from memory of its public format; the live feed is unverified.
 - A yen test exposed and fixed two defects: foreign-currency shortfalls were being "explained" as Indian TDS, and explanations used ₹ for non-INR amounts.
+
+## Fifth iteration
+- Object storage is tested with **moto**, in-process (unit/integration tests) and as a real HTTP S3 server (browser journey: export → stored with SSE and SHA-256 → verified download → storage self-test). That proves the S3 API usage, not behaviour on real AWS/Oracle/Ceph/MinIO, nor IAM/bucket-policy/KMS/network setup. Use **Test storage** on your real bucket.
+- AED is derived from FBIL USD/INR and the configured 3.6725 peg (from memory; verify, and note a peg can change). Neither FBIL nor the ECB publishes AED.
+- Writing the adoption test for the new migration exposed a flaw in legacy-database handling (it always stamped the baseline); it now stamps the newest revision the database already satisfies.
+- Full suite: 291 tests pass on PostgreSQL 16 and on SQLite (4 are Postgres-only).

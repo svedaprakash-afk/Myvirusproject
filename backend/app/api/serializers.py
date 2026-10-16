@@ -78,7 +78,7 @@ def tds(t: TdsEntry) -> dict:
 
 def batch(b: PostingBatch, lines: bool = False) -> dict:
     out = {"id": b.id, "entity_id": b.entity_id, "status": b.status.value, "connector": b.connector, "created_by": b.created_by, "approved_by": b.approved_by,
-           "created_at": d(b.created_at), "exported_at": d(b.exported_at), "acked_at": d(b.acked_at), "checksum": b.checksum, "error": b.error,
+           "created_at": d(b.created_at), "exported_at": d(b.exported_at), "acked_at": d(b.acked_at), "checksum": b.checksum, "stored": bool(b.export_key), "error": b.error,
            "total_minor": b.total_minor, "voucher_count": len({x.voucher_no for x in b.lines})}
     if lines:
         out["lines"] = [{"id": x.id, "voucher_no": x.voucher_no, "line_type": x.line_type, "account": x.account, "debit_minor": x.debit_minor,

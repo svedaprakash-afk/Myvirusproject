@@ -1,0 +1,12 @@
+# OPTIONAL — only if you cannot use object storage. Not part of the default kustomization.
+# 1) kubectl apply -f this file
+# 2) in configmap.yaml set STORAGE_BACKEND: "local", EXPORT_DIR: /data/exports, FEED_ROOT: /data/feeds
+# 3) in api.yaml and worker.yaml add:  volumes: [{ name: data, persistentVolumeClaim: { claimName: cashapp-data } }]
+#    and under the container:           volumeMounts: [{ name: data, mountPath: /data }]
+# Needs a ReadWriteMany storage class (NFS / CephFS / EFS / Filestore / Azure Files NFS) because api and worker both write.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: cashapp-data, namespace: cashapp }
+spec:
+  accessModes: [ReadWriteMany]
+  resources: { requests: { storage: 20Gi } }

@@ -3,15 +3,14 @@ configuration, not code. Shipped: folder drop (SFTP/host-to-host landing zones, 
 Bank-specific APIs and native SFTP polling are listed as planned and refuse to run."""
 from __future__ import annotations
 
-import glob
 import os
-import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Callable
 
 from ..config import check_egress, settings
 from ..money import parse_amount
+from ..storage import clean_key
 from .statements import RawTxn, StatementError, parse_date
 
 
@@ -44,7 +43,7 @@ def validate_feed(cfg: dict) -> list[str]:
         return [f"feed type '{t}' is planned, not implemented"]
     errs = []
     if t == "folder_drop" and not cfg.get("path"):
-        errs.append("folder_drop needs 'path' (relative to FEED_ROOT)")
+        errs.append("folder_drop needs 'path' (a folder under the feed root / a key prefix in the bucket)")
     if t == "rest_json":
         for k in ("url", "records_path", "map"):
             if not cfg.get(k):
@@ -58,31 +57,33 @@ def validate_feed(cfg: dict) -> list[str]:
     return errs
 
 
-def _safe_dir(rel: str) -> str:
-    root = os.path.realpath(settings.feed_root)
-    full = os.path.realpath(os.path.join(root, rel))
-    if full != root and not full.startswith(root + os.sep):
-        raise FeedError("feed path escapes FEED_ROOT")
-    return full
+def fetch_folder_drop(cfg: dict, store=None) -> list[FetchedFile]:
+    """Files in <feeds>/<path>/ (direct children only, not processed/). The 'feeds' area is a local directory (FEED_ROOT) or an
+    object-storage prefix, depending on STORAGE_BACKEND: a bank's SFTP/H2H landing zone can simply be a bucket."""
+    import fnmatch
 
+    from ..storage import StorageError, get_store
 
-def fetch_folder_drop(cfg: dict) -> list[FetchedFile]:
-    d = _safe_dir(cfg["path"])
-    if not os.path.isdir(d):
-        raise FeedError(f"folder '{cfg['path']}' does not exist under FEED_ROOT")
+    try:
+        store = store or get_store("feeds", settings)
+        base = clean_key(cfg["path"].strip("/"))
+        objs = store.list(base)
+    except StorageError as e:
+        raise FeedError(("feed path escapes the feed root" if "invalid storage key" in str(e) or "escapes" in str(e) else f"feed storage error: {e}"))
     out = []
-    for f in sorted(glob.glob(os.path.join(d, cfg.get("pattern", "*")))):
-        if not os.path.isfile(f) or os.path.getsize(f) > 25 * 1024 * 1024:
+    for o in objs:
+        rel = o.key[len(base) + 1:]
+        if "/" in rel or not fnmatch.fnmatch(rel, cfg.get("pattern", "*")) or o.size > 25 * 1024 * 1024:
             continue
-        with open(f, "rb") as fh:
-            data = fh.read()
+        try:
+            data = store.get(o.key)
+        except StorageError as e:
+            raise FeedError(f"could not read {o.key}: {e}")
 
-        def done(f=f):
-            arch = os.path.join(d, "processed")
-            os.makedirs(arch, exist_ok=True)
-            shutil.move(f, os.path.join(arch, f"{datetime.utcnow():%Y%m%dT%H%M%S}_{os.path.basename(f)}"))
+        def done(key=o.key, name=rel):
+            store.move(key, f"{base}/processed/{datetime.utcnow():%Y%m%dT%H%M%S}_{name}")
 
-        out.append(FetchedFile(os.path.basename(f), data, done if cfg.get("archive", True) else None))
+        out.append(FetchedFile(rel, data, done if cfg.get("archive", True) else None))
     return out
 
 

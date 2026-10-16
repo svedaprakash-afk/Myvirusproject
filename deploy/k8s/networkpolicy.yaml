@@ -49,3 +49,5 @@ spec:
       ports: [{ protocol: TCP, port: 993 }]
     - to: [{ ipBlock: { cidr: 203.0.113.30/32 } }]      # PLACEHOLDER: FBIL / bank API endpoints
       ports: [{ protocol: TCP, port: 443 }]
+    - to: [{ ipBlock: { cidr: 203.0.113.40/32 } }]      # PLACEHOLDER: object storage (prefer a private/VPC endpoint's address range)
+      ports: [{ protocol: TCP, port: 443 }]

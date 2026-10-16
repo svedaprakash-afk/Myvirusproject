@@ -192,13 +192,44 @@ def derive_cross(eur_inr: Decimal, eur_date: date, ecb_date: date, ecb: dict[str
     return out
 
 
+def pegged() -> dict[str, Decimal]:
+    out = {}
+    for item in settings.fx_pegs:
+        try:
+            c, v = item.split(":")
+            d = Decimal(v)
+            if d > 0:
+                out[c.strip().upper()] = d
+        except (ValueError, InvalidOperation):
+            continue
+    return out
+
+
+def derive_pegged(usd_inr: Decimal, usd_date: date, wanted: tuple[str, ...]) -> Parsed:
+    """INR per 1 CCY = (INR per USD) / (CCY per USD peg). Exact as long as the peg holds; it is configuration, not a market quote."""
+    out = Parsed()
+    for c, peg in pegged().items():
+        if c in wanted and c not in FBIL_DIRECT:
+            out.rates.append((c, usd_date, f"{usd_inr / peg:.6f}"))
+    return out
+
+
 def run_feed(db: Session, actor: str, actor_id: int | None = None, transport=None, url: str | None = None, cross_transport=None) -> dict:
     data, name = fetch_feed(url, transport)
     parsed = parse_reference_rates(data, name, as_of=date.today(), wanted=settings.fx_feed_currencies)
     if not parsed.rates:
         raise ValueError("The feed was fetched but no recognisable rates were found (layout changed?). Nothing stored.")
     result = store_rates(db, parsed, "fbil_reference", actor, actor_id)
-    need = [c for c in settings.fx_feed_currencies if c not in FBIL_DIRECT and c != "INR"]
+    pegs = pegged()
+    usd_row = max((r for r in parsed.rates if r[0] == "USD"), key=lambda r: r[1], default=None)
+    result["pegged"] = {"requested": [c for c in settings.fx_feed_currencies if c in pegs], "stored": 0, "note": None}
+    if result["pegged"]["requested"]:
+        if usd_row is None:
+            result["pegged"]["note"] = "FBIL feed carried no USD rate; cannot derive pegged currencies"
+        else:
+            pr = derive_pegged(Decimal(usd_row[2]), usd_row[1], settings.fx_feed_currencies)
+            result["pegged"]["stored"] = store_rates(db, pr, "derived_peg_usd", actor, actor_id)["stored"]
+    need = [c for c in settings.fx_feed_currencies if c not in FBIL_DIRECT and c not in pegs and c != "INR"]
     result["derived"] = {"requested": need, "stored": 0, "note": None}
     if need and settings.fx_cross_url:
         try:

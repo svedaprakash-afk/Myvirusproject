@@ -25,7 +25,7 @@ def tables(e):
 
 
 def test_fresh_database_upgrades_to_exactly_the_models(eng):
-    assert migrate.upgrade(eng) == migrate.head() == "0001"
+    assert migrate.upgrade(eng) == migrate.head() == "0002"
     assert tables(eng) == set(Base.metadata.tables) | {"alembic_version"}
     assert migrate.drift(eng) == [], "CI GUARD: a model changed without a migration. Run `python -m app.cli create-migration \"msg\"` and review it."
 
@@ -34,7 +34,7 @@ def test_upgrade_is_idempotent_and_preserves_data(eng):
     migrate.upgrade(eng)
     with eng.begin() as c:
         c.execute(User.__table__.insert().values(email="a@x.com", name="A", role=Role.admin, password_hash="x", active=True, entity_ids=[], created_at=__import__("datetime").datetime.utcnow()))
-    assert migrate.upgrade(eng) == "0001"
+    assert migrate.upgrade(eng) == migrate.head()
     with eng.connect() as c:
         assert c.execute(text("select count(*) from users")).scalar() == 1
 
@@ -43,7 +43,7 @@ def test_downgrade_to_base_removes_everything_but_the_version_table(eng):
     migrate.upgrade(eng)
     migrate.downgrade(eng, "base")
     assert tables(eng) == {"alembic_version"}
-    assert migrate.upgrade(eng) == "0001"
+    assert migrate.upgrade(eng) == migrate.head()
 
 
 def test_database_created_by_the_old_create_all_is_adopted_without_data_loss(eng):
@@ -54,6 +54,37 @@ def test_database_created_by_the_old_create_all_is_adopted_without_data_loss(eng
     assert migrate.upgrade(eng) == migrate.head()
     with eng.connect() as c:
         assert c.execute(text("select email from users")).scalar() == "old@x.com"
+
+
+def test_0001_to_0002_upgrade_preserves_existing_batches_and_downgrade_removes_the_column(eng):
+    migrate.upgrade(eng, "0001")
+    assert "export_key" not in {c["name"] for c in inspect(eng).get_columns("posting_batches")}
+    with eng.begin() as c:
+        c.execute(text("insert into legal_entities (id, name, base_currency, config, ledgers) values (1, 'E', 'INR', '{}', '{}')"))
+        c.execute(text("insert into posting_batches (id, entity_id, status, idempotency_key, created_at, total_minor) values (7, 1, 'draft', 'k', '2026-10-01 00:00:00', 5)"))
+    assert migrate.upgrade(eng) == "0002"
+    with eng.connect() as c:
+        assert c.execute(text("select total_minor, export_key from posting_batches where id = 7")).one() == (5, None)
+    migrate.downgrade(eng, "0001")
+    assert "export_key" not in {c["name"] for c in inspect(eng).get_columns("posting_batches")}
+    with eng.connect() as c:
+        assert c.execute(text("select total_minor from posting_batches where id = 7")).scalar() == 5
+
+
+def test_legacy_database_from_an_older_release_is_stamped_at_its_own_revision_then_upgraded(eng):
+    """A create_all() database from before export_key existed: it is at 0001, so adoption stamps 0001 and the upgrade ADDS the column
+    (stamping head would silently leave it without the column; stamping 0001 blindly would break databases that already have it)."""
+    Base.metadata.create_all(eng)
+    with eng.begin() as c:
+        c.execute(text("alter table posting_batches drop column export_key"))
+    assert migrate.adoptable_revision(eng) == ("0001", [])
+    assert migrate.upgrade(eng) == "0002"
+    assert "export_key" in {c["name"] for c in inspect(eng).get_columns("posting_batches")}
+
+
+def test_legacy_database_that_already_has_the_latest_columns_is_stamped_at_head(eng):
+    Base.metadata.create_all(eng)
+    assert migrate.adoptable_revision(eng) == ("0002", [])
 
 
 def test_legacy_database_that_does_not_match_the_baseline_is_refused_untouched(eng):
@@ -87,7 +118,7 @@ def test_cli_migrate_status_and_downgrade_safety(tmp_path):
     env = {"DATABASE_URL": f"sqlite:///{tmp_path}/cli.db"}
     assert run("-m", "app.cli", "status", env=env).returncode == 1                        # no schema yet
     r = run("-m", "app.cli", "migrate", env=env)
-    assert r.returncode == 0 and "revision 0001" in r.stdout
+    assert r.returncode == 0 and f"revision {migrate.head()}" in r.stdout
     s = run("-m", "app.cli", "status", env=env)
     assert s.returncode == 0 and "up_to_date=True drift=0" in s.stdout
     assert run("-m", "app.cli", "downgrade", "base", env=env).returncode == 2             # refuses without --yes
@@ -104,7 +135,7 @@ def test_production_refuses_to_start_on_a_stale_schema_and_dev_upgrades(tmp_path
     assert run("-m", "app.cli", "migrate", env=prod).returncode == 0
     assert "STARTED" in run("-c", code, env=prod).stdout
     dev = {"DATABASE_URL": f"sqlite:///{tmp_path}/d.db", "APP_ENV": "dev"}
-    assert "STARTED" in run("-c", code, env=dev).stdout and migrate.current(make_engine(dev["DATABASE_URL"])) == "0001"
+    assert "STARTED" in run("-c", code, env=dev).stdout and migrate.current(make_engine(dev["DATABASE_URL"])) == migrate.head()
 
 
 # ---------------------------------------------------------------------------------------------- PostgreSQL (real server)
@@ -123,7 +154,7 @@ def pgeng():
 
 @pg
 def test_postgres_upgrade_has_one_copy_of_each_enum_and_no_drift(pgeng):
-    assert migrate.upgrade(pgeng) == "0001"
+    assert migrate.upgrade(pgeng) == migrate.head()
     assert migrate.drift(pgeng) == []
     with pgeng.connect() as c:
         enums = [r[0] for r in c.execute(text("select typname from pg_type where typtype='e'"))]
@@ -137,13 +168,13 @@ def test_postgres_downgrade_drops_tables_and_enum_types(pgeng):
     with pgeng.connect() as c:
         assert c.execute(text("select count(*) from pg_type where typtype='e'")).scalar() == 0
     assert tables(pgeng) == {"alembic_version"}
-    assert migrate.upgrade(pgeng) == "0001"          # and it can be re-applied
+    assert migrate.upgrade(pgeng) == migrate.head()  # and it can be re-applied
 
 
 @pg
 def test_postgres_legacy_create_all_database_is_adopted(pgeng):
     Base.metadata.create_all(pgeng)
-    assert migrate.upgrade(pgeng) == "0001"
+    assert migrate.upgrade(pgeng) == migrate.head()
     assert migrate.drift(pgeng) == []
 
 
@@ -155,4 +186,4 @@ def test_postgres_concurrent_migrators_are_serialised(pgeng):
     ps = [subprocess.Popen([sys.executable, "-m", "app.cli", "migrate"], cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(4)]
     res = [(p.wait(timeout=120), p.stdout.read(), p.stderr.read()) for p in ps]
     assert [r[0] for r in res] == [0, 0, 0, 0], res
-    assert migrate.current(pgeng) == "0001" and migrate.drift(pgeng) == []
+    assert migrate.current(pgeng) == migrate.head() and migrate.drift(pgeng) == []

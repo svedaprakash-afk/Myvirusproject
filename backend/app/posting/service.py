@@ -14,6 +14,7 @@ from ..config import settings
 from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PostingBatch, PostingLine,
                       ProposalStatus, MatchProposal, TxnStatus, User, utcnow, DEFAULT_LEDGERS, DEFAULT_ENTITY_CONFIG)
 from ..fx import MissingRate, need_rate, to_base
+from ..storage import StorageError, get_store
 from . import mapped
 from .connectors import REGISTRY
 
@@ -190,12 +191,18 @@ def export_batch(db: Session, batch: PostingBatch, connector: str, user: User, t
         raise PostingError(f"Connector '{c.label}' is planned but not implemented yet")
     _attach_refs(db, batch)
     r = c.render(batch, entity)
-    batch.checksum = hashlib.sha256(r.content).hexdigest()
+    checksum = hashlib.sha256(r.content).hexdigest()
+    key = f"{batch.entity_id}/{batch.id}/{r.filename}"
+    try:                      # store FIRST: a batch is only 'exported' if its file is durably stored and readable back
+        store = get_store("exports")
+        store.put(key, r.content, r.content_type, checksum)
+        store.get(key, verify_sha256=checksum)
+    except StorageError as e:
+        raise PostingError(f"Could not store the export file, so the batch was NOT marked exported: {e}")
+    batch.checksum, batch.export_key = checksum, key
     batch.status, batch.connector, batch.exported_at = BatchStatus.exported, connector, utcnow()
-    os.makedirs(settings.export_dir, exist_ok=True)
-    with open(os.path.join(settings.export_dir, r.filename), "wb") as f:
-        f.write(r.content)
-    audit.log(db, user.name, "batch.exported", "PostingBatch", batch.id, batch.entity_id, {"connector": connector, "sha256": batch.checksum, "file": r.filename}, user.id)
+    audit.log(db, user.name, "batch.exported", "PostingBatch", batch.id, batch.entity_id,
+              {"connector": connector, "sha256": batch.checksum, "file": r.filename, "key": key, "backend": store.backend}, user.id)
     if hasattr(c, "deliver"):   # push-style connector: deliver now, and acknowledge automatically if the ERP returns document numbers
         try:
             docs = c.deliver(batch, entity)
@@ -205,6 +212,18 @@ def export_batch(db: Session, batch: PostingBatch, connector: str, user: User, t
         if docs:
             acknowledge(db, batch, docs, user)
     return r.filename, r.content, r.content_type
+
+
+def download_stored(db: Session, batch: PostingBatch, user: User) -> tuple[str, bytes]:
+    """Re-read an exported file from storage, refusing to serve it unless it still matches the checksum recorded at export time."""
+    if not batch.export_key or not batch.checksum:
+        raise PostingError("This batch has not been exported (no stored file)")
+    try:
+        data = get_store("exports").get(batch.export_key, verify_sha256=batch.checksum)
+    except StorageError as e:
+        raise PostingError(f"Stored export cannot be served: {e}")
+    audit.log(db, user.name, "batch.downloaded", "PostingBatch", batch.id, batch.entity_id, {"key": batch.export_key, "sha256": batch.checksum}, user.id)
+    return batch.export_key.rsplit("/", 1)[-1], data
 
 
 def _attach_refs(db: Session, batch: PostingBatch) -> None:

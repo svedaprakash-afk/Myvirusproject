@@ -76,6 +76,14 @@ def export(bid: int, body: ExportIn, user: User = Depends(require("release_batch
     return Response(content, media_type=ctype, headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Checksum-SHA256": b.checksum or ""})
 
 
+@router.get("/posting/batches/{bid}/download")
+def download(bid: int, user: User = Depends(require("release_batch", "build_batch", "audit")), db: Session = Depends(get_db)):
+    b = get_or_404(db, PostingBatch, bid)
+    guard(user, b)
+    name, data = _p(posting.download_stored, db, b, user)
+    return Response(data, media_type="application/octet-stream", headers={"Content-Disposition": f'attachment; filename="{name}"', "X-Checksum-SHA256": b.checksum or ""})
+
+
 class AckIn(BaseModel):
     erp_docs: dict[str, str] = Field(..., description="voucher_no -> document number returned by the ERP")
 

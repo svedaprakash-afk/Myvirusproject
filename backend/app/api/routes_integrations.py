@@ -300,7 +300,8 @@ def fx_feed_status(user: User = Depends(require("view")), db: Session = Depends(
     want = list(config.settings.fx_feed_currencies)
     chost = urlparse(config.settings.fx_cross_url).hostname if config.settings.fx_cross_url else None
     return {"configured": bool(host), "host": host, "currencies": want,
-            "direct_currencies": [c for c in want if c in fxfeed.FBIL_DIRECT], "derived_currencies": [c for c in want if c not in fxfeed.FBIL_DIRECT],
+            "direct_currencies": [c for c in want if c in fxfeed.FBIL_DIRECT], "pegged_currencies": [c for c in want if c in fxfeed.pegged()],
+            "derived_currencies": [c for c in want if c not in fxfeed.FBIL_DIRECT and c not in fxfeed.pegged()],
             "cross_configured": bool(chost), "cross_host": chost, "cross_egress_allowed": egress_allowed(chost) if chost else None, "source": "FBIL reference rate (published as the RBI reference rate since 2018)",
             "egress_allowed": egress_allowed(host) if host else None,
             "last_run": None if not last else {"slot": last.slot, "status": last.status, "at": S.d(last.finished_at or last.started_at), "detail": last.detail}}
@@ -337,3 +338,33 @@ def jobs(limit: int = 50, user: User = Depends(require("view")), db: Session = D
 
     return [{"name": j.name, "slot": j.slot, "status": j.status, "started_at": S.d(j.started_at), "finished_at": S.d(j.finished_at), "detail": j.detail}
             for j in db.execute(select(JobRun).order_by(JobRun.id.desc()).limit(min(limit, 200))).scalars()]
+
+
+# ------------------------------------------------------------------------------------------------ object storage
+@router.get("/storage")
+def storage_status(user: User = Depends(require("view"))):
+    from .. import storage
+
+    cfg = config.settings
+    errs = storage.validate_settings(cfg)
+    out = {"backend": cfg.storage_backend, "problems": errs, "strict": cfg.residency_strict}
+    if cfg.storage_backend == "s3":
+        out |= {"bucket": cfg.s3_bucket, "prefix": cfg.s3_prefix, "region": cfg.s3_region or None, "endpoint_host": storage.s3_host(cfg) if cfg.s3_bucket else None,
+                "encryption": cfg.s3_sse or "not declared", "kms_key": bool(cfg.s3_kms_key_id)}
+    else:
+        out |= {"exports_dir": cfg.export_dir, "feeds_dir": cfg.feed_root}
+    return out
+
+
+@router.post("/storage/test")
+def storage_test(user: User = Depends(require("configure", "fx"))):
+    """Write → read back → verify → delete a probe object in each area. Proves credentials, bucket, encryption headers and permissions."""
+    from .. import storage
+
+    out = {}
+    try:
+        for area in ("exports", "feeds"):
+            out[area] = storage.probe(storage.get_store(area))
+    except storage.StorageError as e:
+        raise HTTPException(409, str(e))
+    return out

@@ -18,8 +18,7 @@ spec:
           envFrom: [{ configMapRef: { name: cashapp-config } }, { secretRef: { name: cashapp-secrets } }]
           resources: { requests: { cpu: 100m, memory: 256Mi }, limits: { cpu: 500m, memory: 768Mi } }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
-          volumeMounts: [{ name: data, mountPath: /data }, { name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
           readinessProbe: { exec: { command: ["python", "-c", "import app.main"] }, initialDelaySeconds: 10, periodSeconds: 60 }
       volumes:
-        - { name: data, persistentVolumeClaim: { claimName: cashapp-data } }
         - { name: tmp, emptyDir: {} }

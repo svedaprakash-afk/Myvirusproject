@@ -19,6 +19,8 @@ ERP open items into matched, audit-ready cash postings, with exceptions, maker-c
 - **FX reference-rate feed**: the RBI reference rate is now computed and published by **FBIL**; a tolerant parser (CSV/TXT/HTML/XLSX, JPY per 100), daily scheduled fetch after 14:00 IST with bounded retries, manual file import, a 5% day-on-day circuit breaker, stale-rate warnings. **The live URL/layout is unverified — see `docs/DEPLOYMENT_INDIA.md`.**
 - **Worker**: `python -m app.cli worker` runs FX fetch, inbox polling, bank-feed sync and matching on schedule; slot-locked so replicas never double-run.
 - **Cloud-agnostic India deployment**: hardened containers, Kubernetes manifests with default-deny egress, compose file, CI workflow (`deploy/`).
+- **Object-storage exports**: posting exports and the bank-file landing zone live in S3-compatible storage (or a local directory). SSE/KMS, SHA-256 integrity at write and at every download, a batch is only "exported" once its file is stored and read back, verified downloads, a storage self-test, and strict-mode residency checks. No shared volume needed.
+- **AED** (and other USD-pegged currencies via `FX_PEGS`) derived from FBIL USD/INR and the peg; neither FBIL nor the ECB publishes it.
 - **Schema migrations (Alembic)**: reviewed baseline, deterministic constraint names, drift guard in tests/CI, safe adoption of pre-Alembic databases, a Postgres advisory lock so many pods can start at once, and a production start-up guard that refuses a stale schema (`python -m app.cli migrate | status | create-migration | downgrade`).
 - **Top-10 currencies**: USD, EUR, JPY, GBP, CNY, AUD, CAD, CHF, HKD, SGD. FBIL publishes four; the other six are *derived* cross rates (FBIL EUR/INR ÷ ECB EUR/currency), cross-checked against FBIL's USD, labelled non-official.
 - **Data residency**: strict mode (Indian region required, egress allow-list, LLM off by default) + `docs/DEPLOYMENT_INDIA.md`.
@@ -44,7 +46,7 @@ cd ../frontend && npm install && npm run dev       # http://localhost:5173
 ```
 Demo logins (password `demo1234`): analyst@ / manager@ / treasury@ / cfo@ / auditor@ / admin@`meridian.example`.
 
-Tests: `cd backend && pytest` (252; `TEST_DATABASE_URL=postgresql+psycopg://… pytest` runs the same suite on PostgreSQL) and `cd frontend && npm test && npm run build`.
+Tests: `cd backend && pytest` (291; `TEST_DATABASE_URL=postgresql+psycopg://… pytest` runs the same suite on PostgreSQL) and `cd frontend && npm test && npm run build`.
 Production: `kubectl apply -k deploy/k8s` (see `deploy/README.md`) or `docker compose up` with `JWT_SECRET`, `DEPLOY_REGION` set; create the first user with `python -m app.cli create-user`.
 
 ## Architecture
@@ -62,7 +64,7 @@ React/TypeScript UI in `frontend/`. Money is integer paise end to end.
   computed from booking vs settlement rates. Cross-currency matches auto-approve (default ON) only when the payer stated the foreign amount; estimates never do. Manual cross-currency allocation is refused. No unrealised-FX revaluation.
 - **Data residency is only partly enforceable in software** — see `docs/DEPLOYMENT_INDIA.md`.
 - Statutory TDS rates are **defaults for matching hints**, configurable per customer; confirm with your tax team.
-- Not built: SSO/MFA, field-level encryption at rest, background job queue, multi-currency FX revaluation,
+- Not built: SSO/MFA, Azure Blob (not S3-compatible) storage backend, field-level encryption at rest, background job queue, multi-currency FX revaluation,
   customer portal, email-inbox connector, reversal of already-posted receipts, rate limiting. 
 - The optional LLM remittance extractor (set `ANTHROPIC_API_KEY`) redacts PII and validates output against the source text, but has
   only been tested with a fake transport, not the live API. Matching never depends on it.

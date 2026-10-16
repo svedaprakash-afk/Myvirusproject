@@ -24,7 +24,7 @@ their service providers; whether it reaches you depends on how you use this syst
 - [ ] **Compute** in an Indian region (AWS Mumbai `ap-south-1` / Hyderabad `ap-south-2`; Azure Central/South India; GCP Mumbai/Delhi `asia-south1/2`).
 - [ ] **Database**: managed Postgres in-region, encryption at rest with a customer-managed key (KMS) created **in-region**; TLS only.
 - [ ] **Backups & DR**: snapshots, WAL archives and the DR replica in an Indian region (e.g. Mumbai ↔ Hyderabad). **No cross-border replication**; check the provider's default "global" backup/replication options are off.
-- [ ] **Object storage** for `EXPORT_DIR` / feed landing zones: same-region bucket, private, versioned, SSE-KMS.
+- [ ] **Object storage** (`STORAGE_BACKEND=s3`) for exports and the bank-file landing zone: same-region bucket, Block Public Access, versioning, TLS-only policy, SSE-KMS with an in-region key, optionally Object Lock (WORM) for audit evidence and a lifecycle/retention rule. In strict mode the service refuses to start unless `S3_REGION` is Indian (or a custom endpoint is allow-listed), encryption is declared, and the S3 host is in `ALLOWED_EGRESS_HOSTS`. Exports are integrity-checked (SHA-256) at write and again at every download.
 - [ ] **Logs / metrics / traces / error tracking**: in-region sink. Application logs avoid payload content, but confirm your APM does not capture request bodies; many SaaS APMs are hosted abroad.
 - [ ] **E-mail**: the remittance mailbox must be hosted in India or its provider contractually committed to Indian storage. A mailbox on a foreign SaaS means remittance data already left India before we poll it.
 - [ ] **Network egress**: default-deny egress at the VPC/firewall as well as `ALLOWED_EGRESS_HOSTS` (defence in depth). Allow only: your ERP, bank endpoints, the mailbox host, the container registry/OS mirrors.
@@ -43,7 +43,7 @@ DATABASE_URL=postgresql+psycopg://app:***@mydb.xxxx.ap-south-1.rds.amazonaws.com
 JWT_SECRET=<64 random bytes>      APP_ENV=prod      ALLOW_DEMO=0
 DATA_RESIDENCY_STRICT=1           DEPLOY_REGION=ap-south-1
 ALLOWED_EGRESS_HOSTS=erp.corp.example.in,imap.corp.example.in,api.yourbank.co.in
-FEED_ROOT=/data/feeds             EXPORT_DIR=/data/exports
+STORAGE_BACKEND=s3  S3_BUCKET=corp-cashapp-prod  S3_REGION=ap-south-1  S3_SSE=aws:kms  S3_KMS_KEY_ID=arn:aws:kms:ap-south-1:...:key/...
 ```
 The full test-suite and the migrations have been run against PostgreSQL 16 (see CI `backend-postgres`), but never against a managed service or your data; run a rehearsal restore and upgrade on a copy before go-live.
 

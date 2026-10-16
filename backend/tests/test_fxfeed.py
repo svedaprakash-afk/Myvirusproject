@@ -244,7 +244,7 @@ FBIL4 = b"""Date,Currency Pair,Rate
 
 def test_top_ten_set_is_defined_and_fbil_covers_only_four():
     assert len(fxfeed.TOP10) == 10 and set(fxfeed.FBIL_DIRECT) < set(fxfeed.TOP10)
-    assert set(config.settings.fx_feed_currencies) == set(fxfeed.TOP10)
+    assert set(config.settings.fx_feed_currencies) == set(fxfeed.TOP10) | {"AED"}
 
 
 def test_ecb_parser_reads_namespaced_xml_and_rejects_hostile_xml():
@@ -274,7 +274,7 @@ def test_cross_check_withholds_all_derived_rates_when_the_method_misprices_usd()
 
 def _cfg(monkeypatch, cross=True):
     s = dataclasses.replace(config.settings, fx_feed_url="https://www.fbil.org.in/rates", fx_cross_url="https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml" if cross else "",
-                            fx_feed_currencies=fxfeed.TOP10)
+                            fx_feed_currencies=fxfeed.TOP10 + ("AED",))
     monkeypatch.setattr(fxfeed, "settings", s)
     monkeypatch.setattr(config, "settings", s)
 
@@ -282,7 +282,7 @@ def _cfg(monkeypatch, cross=True):
 def test_run_feed_stores_four_official_and_six_derived_with_distinct_sources(db, monkeypatch):
     _cfg(monkeypatch)
     out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4, cross_transport=lambda u: ECB)
-    assert out["stored"] == 4 and out["derived"]["stored"] == 6 and out["derived"]["note"] is None
+    assert out["stored"] == 4 and out["derived"]["stored"] == 6 and out["derived"]["note"] is None and out["pegged"]["stored"] == 1
     src = {r.currency: r.source for r in db.query(ExchangeRate).all()}
     assert {c for c, s in src.items() if s == "fbil_reference"} == {"USD", "EUR", "GBP", "JPY"}
     assert {c for c, s in src.items() if s == "derived_fbil_ecb"} == {"CNY", "AUD", "CAD", "CHF", "HKD", "SGD"}
@@ -291,7 +291,7 @@ def test_run_feed_stores_four_official_and_six_derived_with_distinct_sources(db,
 def test_without_a_cross_source_derived_currencies_are_reported_missing_not_invented(db, monkeypatch):
     _cfg(monkeypatch, cross=False)
     out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4)
-    assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "CNY" in out["derived"]["note"] and "manual entry" in out["derived"]["note"]
+    assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "CNY" in out["derived"]["note"] and "AED" not in out["derived"]["note"] and "manual entry" in out["derived"]["note"]
     assert db.query(ExchangeRate).filter(ExchangeRate.currency == "CNY").count() == 0
 
 
@@ -306,3 +306,47 @@ def test_cross_host_must_be_allow_listed_in_strict_mode(db, monkeypatch):
     monkeypatch.setattr(config, "settings", dataclasses.replace(config.settings, residency_strict=True, deploy_region="ap-south-1", allowed_egress=("www.fbil.org.in",)))
     out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4, cross_transport=lambda u: ECB)
     assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "blocked" in out["derived"]["note"]
+
+
+# ------------------------------------------------------------------------------------------------ AED (USD peg)
+def test_aed_is_derived_from_fbil_usd_and_the_peg_without_any_cross_feed(db, monkeypatch):
+    _cfg(monkeypatch, cross=False)
+    out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4)
+    assert out["pegged"] == {"requested": ["AED"], "stored": 1, "note": None}
+    aed = db.query(ExchangeRate).filter_by(currency="AED").one()
+    assert aed.source == "derived_peg_usd" and abs(aed.rate_micro / 1e6 - 83.45 / 3.6725) < 1e-5 and aed.rate_date == date(2026, 10, 16)
+
+
+def test_peg_is_configurable_and_a_missing_usd_rate_is_reported_not_guessed(db, monkeypatch):
+    _cfg(monkeypatch, cross=False)
+    s = dataclasses.replace(config.settings, fx_pegs=("AED:3.70", "SAR:3.75", "bogus", "XXX:0"), fx_feed_currencies=fxfeed.TOP10 + ("AED", "SAR"))
+    monkeypatch.setattr(fxfeed, "settings", s)
+    assert fxfeed.pegged() == {"AED": fxfeed.Decimal("3.70"), "SAR": fxfeed.Decimal("3.75")}
+    fxfeed.run_feed(db, "t", transport=lambda u: FBIL4)
+    assert abs(db.query(ExchangeRate).filter_by(currency="SAR").one().rate_micro / 1e6 - 83.45 / 3.75) < 1e-5
+    no_usd = b"Date,Currency Pair,Rate\n16/10/2026,EUR/INR,90.6000\n"
+    out = fxfeed.run_feed(db, "t", transport=lambda u: no_usd)
+    assert out["pegged"]["stored"] == 0 and "no USD rate" in out["pegged"]["note"]
+
+
+def test_pegged_rate_goes_through_the_same_circuit_breaker(db):
+    db.add(ExchangeRate(currency="AED", rate_date=date(2026, 10, 15), rate_micro=fx.parse_rate("22.72")))
+    db.flush()
+    bad = fxfeed.derive_pegged(fxfeed.Decimal("99.0"), date(2026, 10, 16), ("AED",))       # corrupt USD row => +19% AED move
+    assert fxfeed.store_rates(db, bad, "derived_peg_usd", "t")["stored"] == 0
+
+
+def test_aed_invoice_matches_and_posts_with_realised_fx(w):
+    from app.models import ExchangeRate as ER
+    from app.posting import service as posting
+    from conftest import TODAY
+
+    c = w.customer("G1", "Gulf Trading LLC")
+    inv = w.invoice(c, "EXP/AED/1", 50_000_00, gst_pct=0, currency="AED", booking_rate=22_600_000)
+    t = w.credit(inv.total_minor, "SWIFT CR-GULF TRADING LLC-EXP/AED/1", currency="AED", channel="SWIFT", d=TODAY - timedelta(days=2))
+    w.db.add(ER(currency="AED", rate_date=TODAY - timedelta(days=2), rate_micro=fx.parse_rate("22.7200")))
+    w.db.flush()
+    w.run(t)
+    b = posting.build_batch(w.db, w.e, w.users["ar_manager"])
+    assert sum(l.base_debit_minor for l in b.lines) == sum(l.base_credit_minor for l in b.lines)
+    assert next(l for l in b.lines if l.line_type == "fx_gain").credit_minor == 600_000      # AED 50,000 x (22.72 - 22.60) = ₹6,000.00

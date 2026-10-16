@@ -49,17 +49,41 @@ def drift(engine: Engine) -> list:
         return compare_metadata(MigrationContext.configure(c, opts={"compare_type": True}), Base.metadata)
 
 
-def legacy_problems(engine: Engine) -> list[str]:
-    """For a database created by the old create_all(): is it structurally the baseline? (constraint/index names are ignored — they predate naming conventions)"""
-    insp, probs = inspect(engine), []
-    existing = set(insp.get_table_names())
-    for name, table in Base.metadata.tables.items():
-        if name not in existing:
-            probs.append(f"missing table {name}")
-            continue
-        have = {c["name"] for c in insp.get_columns(name)}
-        probs += [f"missing column {name}.{c.name}" for c in table.columns if c.name not in have]
-    return probs
+def _columns(engine: Engine) -> dict[str, set[str]]:
+    insp = inspect(engine)
+    return {t: {c["name"] for c in insp.get_columns(t)} for t in insp.get_table_names() if t != "alembic_version"}
+
+
+def revision_schemas() -> list[tuple[str, dict[str, set[str]]]]:
+    """(revision, {table: columns}) for every revision, oldest first, computed by actually applying each migration in a scratch SQLite database."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.pool import StaticPool
+
+    scratch = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+    revs = [r.revision for r in reversed(list(ScriptDirectory.from_config(_cfg()).walk_revisions()))]
+    out = []
+    for r in revs:
+        with scratch.connect() as conn:
+            command.upgrade(_cfg(conn), r)
+            conn.commit()
+        out.append((r, _columns(scratch)))
+    scratch.dispose()
+    return out
+
+
+def adoptable_revision(engine: Engine) -> tuple[str | None, list[str]]:
+    """For a database created by the old create_all(): the NEWEST revision whose tables/columns it already contains (it may predate or postdate
+    later revisions). Returns (revision, []) or (None, what is missing relative to the baseline). Constraint/index names are ignored — they
+    predate the naming convention. Extra tables/columns in the live DB are tolerated."""
+    live, best = _columns(engine), None
+    schemas = revision_schemas()
+    for rev, cols in schemas:
+        if all(t in live and cs <= live[t] for t, cs in cols.items()):
+            best = rev
+    if best is None:
+        base = schemas[0][1]
+        return None, [f"missing table {t}" if t not in live else f"missing column {t}.{c}" for t, cs in base.items() for c in sorted(cs) if t not in live or c not in live[t]]
+    return best, []
 
 
 def upgrade(engine: Engine, revision: str = "head") -> str | None:
@@ -69,11 +93,11 @@ def upgrade(engine: Engine, revision: str = "head") -> str | None:
     has_tables = "users" in inspect(engine).get_table_names()
     with engine.begin() as conn:
         if has_tables and not has_version:
-            probs = legacy_problems(engine)
-            if probs:
+            rev, probs = adoptable_revision(engine)
+            if rev is None:
                 raise SchemaError("Existing database predates migrations and does not match the baseline schema: " + "; ".join(probs[:6])
                                   + ". Fix it manually (or restore from a backup) before upgrading; nothing was changed.")
-            command.stamp(_cfg(conn), BASELINE)
+            command.stamp(_cfg(conn), rev)
     with engine.connect() as conn:       # alembic manages its own transactions (per migration); a PG advisory lock serialises replicas
         command.upgrade(_cfg(conn), revision)
         conn.commit()

@@ -67,3 +67,16 @@ def test_dockerfiles_run_as_non_root():
     be = open(os.path.join(ROOT, "..", "..", "backend", "Dockerfile")).read()
     assert "USER 10001" in be and "app.cli worker" in be
     assert "nginx-unprivileged" in open(os.path.join(ROOT, "..", "..", "frontend", "Dockerfile")).read()
+
+
+def test_default_deployment_uses_object_storage_not_a_shared_volume():
+    cm = of("ConfigMap")[0][1]["data"]
+    assert cm["STORAGE_BACKEND"] == "s3" and cm["S3_BUCKET"] == "REPLACE-ME", "must fail loudly until the operator sets a real bucket"
+    assert cm["S3_SSE"] in ("aws:kms", "AES256") and cm["S3_REGION"]
+    assert not of("PersistentVolumeClaim")
+    for _, d in of("Deployment"):
+        spec = d["spec"]["template"]["spec"]
+        assert not any("persistentVolumeClaim" in v for v in spec.get("volumes", []))
+    opt = open(os.path.join(ROOT, "..", "k8s-optional-shared-volume.yaml")).read()
+    assert "ReadWriteMany" in opt
+    assert not any(k in cm for k in ("AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID")), "object-storage credentials come from the pod identity, never a manifest"

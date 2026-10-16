@@ -551,6 +551,7 @@ class PostingBatch(Base):
     exported_at: Mapped[datetime | None] = mapped_column(DateTime)
     acked_at: Mapped[datetime | None] = mapped_column(DateTime)
     checksum: Mapped[str | None] = mapped_column(String(64))
+    export_key: Mapped[str | None] = mapped_column(String(500))     # where the exported file is stored (object-storage key / relative path)
     error: Mapped[str | None] = mapped_column(Text)
     total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
     lines: Mapped[list["PostingLine"]] = relationship(cascade="all, delete-orphan", order_by="PostingLine.id")

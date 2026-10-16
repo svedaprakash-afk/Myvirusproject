@@ -26,17 +26,9 @@ spec:
           livenessProbe: { httpGet: { path: /health, port: http }, initialDelaySeconds: 15, periodSeconds: 20 }
           resources: { requests: { cpu: 200m, memory: 384Mi }, limits: { cpu: "1", memory: 1Gi } }
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
-          volumeMounts: [{ name: data, mountPath: /data }, { name: tmp, mountPath: /tmp }]
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
       volumes:
-        - { name: data, persistentVolumeClaim: { claimName: cashapp-data } }   # exports + feed landing zone; same Indian region as the cluster
         - { name: tmp, emptyDir: {} }
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata: { name: cashapp-data }
-spec:
-  accessModes: [ReadWriteMany]       # needs an RWX class (NFS/EFS/Filestore/Azure Files equivalent) because api and worker share it
-  resources: { requests: { storage: 20Gi } }
 ---
 apiVersion: v1
 kind: Service

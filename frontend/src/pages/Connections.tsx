@@ -199,6 +199,7 @@ function Fx() {
             <tr><td className="muted">Source</td><td>{f.source}</td></tr>
             <tr><td className="muted">Feed URL host</td><td>{f.configured ? <>{f.host} {f.egress_allowed === false && <Chip tone="bad">blocked by residency allow-list</Chip>}</> : <Chip tone="warn">not configured (set FX_FEED_URL)</Chip>}</td></tr>
             <tr><td className="muted">Published by FBIL</td><td>{f.direct_currencies.map((c: string) => <Chip key={c} tone="good">{c}</Chip>)}</td></tr>
+            {f.pegged_currencies?.length > 0 && <tr><td className="muted">Pegged to USD</td><td>{f.pegged_currencies.map((c: string) => <Chip key={c} tone="warn">{c}</Chip>)}<div className="faint" style={{ fontSize: 12, marginTop: 3 }}>= FBIL USD/INR ÷ the configured peg (FX_PEGS, AED 3.6725). Exact while the peg holds; not a market quote.</div></td></tr>}
             <tr><td className="muted">Derived (cross rates)</td><td>{f.derived_currencies.length ? f.derived_currencies.map((c: string) => <Chip key={c} tone="warn">{c}</Chip>) : "—"}
               <div className="faint" style={{ fontSize: 12, marginTop: 3 }}>{f.cross_configured ? <>= FBIL EUR/INR ÷ ECB EUR/currency from {f.cross_host}{f.cross_egress_allowed === false && <Chip tone="bad">blocked by residency allow-list</Chip>}. Indicative, <b>not</b> an official reference rate.</> : <>Not configured (set FX_CROSS_FEED_URL) — enter these by hand or import a file.</>}</div></td></tr>
             <tr><td className="muted">Last run</td><td>{f.last_run ? <><StatusChip s={f.last_run.status === "ok" ? "resolved" : "failed"} /> {f.last_run.slot} {f.last_run.detail?.error && <span style={{ color: "var(--bad)" }}>{f.last_run.detail.error}</span>}</> : <span className="muted">never</span>}</td></tr></tbody></table>}
@@ -218,12 +219,36 @@ function Fx() {
   );
 }
 
+function StorageCard() {
+  const { can, toast } = useApp();
+  const st = useAsync(() => api.get<any>("/storage"), []);
+  const [probe, setProbe] = useState<any>(null); const { run, busy } = useAction();
+  if (!st.data) return <Loading rows={3} />;
+  const s = st.data;
+  return (
+    <div className="card" style={{ maxWidth: 760, marginTop: 14 }}>
+      <h2>Object storage <Chip tone={s.problems.length ? "bad" : "good"}>{s.backend}</Chip></h2>
+      <table><tbody>
+        {s.backend === "s3" ? <>
+          <tr><td className="muted">Bucket</td><td className="mono">{s.bucket}/{s.prefix}</td></tr>
+          <tr><td className="muted">Region / endpoint</td><td>{s.region ?? "—"} {s.endpoint_host && <span className="muted">· {s.endpoint_host}</span>}</td></tr>
+          <tr><td className="muted">Encryption</td><td>{s.encryption}{s.kms_key && <Chip tone="good">KMS key set</Chip>}</td></tr></> : <>
+          <tr><td className="muted">Exports directory</td><td className="mono">{s.exports_dir}</td></tr><tr><td className="muted">Landing zone</td><td className="mono">{s.feeds_dir}</td></tr></>}
+      </tbody></table>
+      {s.problems.map((p: string, i: number) => <div key={i} className="note bad">{p}</div>)}
+      <div className="row mt"><button className="btn" disabled={busy || !can("admin", "finance_head", "treasury")} onClick={async () => { setProbe(null); const x = await run(() => api.post<any>("/storage/test"), "Storage test passed"); if (x) setProbe(x); }}>Test storage</button></div>
+      {probe && <div className="mt">{["exports", "feeds"].map((a) => <div key={a} className="row between"><span>{a}: write → read → verify → delete</span><Chip tone={probe[a].ok ? "good" : "bad"}>{probe[a].ok ? `OK · ${probe[a].ms} ms` : "FAILED"}</Chip></div>)}</div>}
+      {s.backend === "local" && <div className="note warn mt">Local storage means files live on this host/volume. For several replicas, or to survive node loss, use S3-compatible object storage (<span className="mono">STORAGE_BACKEND=s3</span>).</div>}
+    </div>
+  );
+}
+
 function Residency() {
   const { entity } = useApp();
   const r = useAsync(() => api.get<any>(`/entities/${entity.id}/integrations`), [entity.id]);
   if (!r.data) return <Loading />;
   const x = r.data.residency;
-  return (
+  return (<>
     <div className="card" style={{ maxWidth: 760 }}>
       <h2>Data residency</h2>
       <table><tbody>
@@ -234,5 +259,7 @@ function Residency() {
       <p className="muted">These are set by the operator through environment variables (<span className="mono">DATA_RESIDENCY_STRICT</span>, <span className="mono">DEPLOY_REGION</span>, <span className="mono">ALLOWED_EGRESS_HOSTS</span>), not by users. In strict mode the service refuses to start outside an Indian region, and the LLM extractor, webhooks, bank APIs and IMAP can only reach allow-listed hosts.</p>
       <div className="note warn">The software enforces egress and startup rules; it cannot verify where your database, backups and logs physically live. See <span className="mono">docs/DEPLOYMENT_INDIA.md</span>.</div>
     </div>
+    <StorageCard />
+    </>
   );
 }
