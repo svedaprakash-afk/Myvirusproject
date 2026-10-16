@@ -225,3 +225,84 @@ def test_dashboard_reports_stale_rates(client, db):
     db.commit()
     s = client.get(f"/api/v1/analytics/summary?entity_id={e}", headers=login(client, "treasury@meridian.example", DEMO_PASSWORD)).json()
     assert {x["currency"] for x in s["stale_rates"]} == {"USD", "EUR"}
+
+
+# ------------------------------------------------------------------------------------------------ top-10 currencies (derived cross rates)
+ECB = b"""<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
+<gesmes:subject>Reference rates</gesmes:subject><Cube><Cube time="2026-10-16">
+<Cube currency="USD" rate="1.0855"/><Cube currency="JPY" rate="164.20"/><Cube currency="GBP" rate="0.8380"/><Cube currency="CNY" rate="7.8100"/>
+<Cube currency="AUD" rate="1.6620"/><Cube currency="CAD" rate="1.4980"/><Cube currency="CHF" rate="0.9640"/><Cube currency="HKD" rate="8.4500"/><Cube currency="SGD" rate="1.4540"/>
+</Cube></Cube></gesmes:Envelope>"""
+FBIL4 = b"""Date,Currency Pair,Rate
+16/10/2026,USD/INR,83.4500
+16/10/2026,EUR/INR,90.6000
+16/10/2026,GBP/INR,108.1000
+16/10/2026,JPY/INR,55.1000
+"""
+
+
+def test_top_ten_set_is_defined_and_fbil_covers_only_four():
+    assert len(fxfeed.TOP10) == 10 and set(fxfeed.FBIL_DIRECT) < set(fxfeed.TOP10)
+    assert set(config.settings.fx_feed_currencies) == set(fxfeed.TOP10)
+
+
+def test_ecb_parser_reads_namespaced_xml_and_rejects_hostile_xml():
+    d, r = fxfeed.parse_ecb(ECB)
+    assert d == date(2026, 10, 16) and r["USD"] == fxfeed.Decimal("1.0855") and len(r) == 9
+    with pytest.raises(ValueError):
+        fxfeed.parse_ecb(b'<?xml version="1.0"?><!DOCTYPE d [<!ENTITY x SYSTEM "file:///etc/passwd">]><Cube time="2026-10-16"><Cube currency="USD" rate="&x;"/></Cube>')
+    with pytest.raises(ValueError, match="no dated rates"):
+        fxfeed.parse_ecb(b"<root/>")
+
+
+def test_cross_rates_are_eur_inr_over_ecb_and_skip_directly_published_currencies():
+    _, ecb = fxfeed.parse_ecb(ECB)
+    d = fxfeed.derive_cross(fxfeed.Decimal("90.6"), date(2026, 10, 16), date(2026, 10, 16), ecb, fxfeed.TOP10, fxfeed.Decimal("83.45"))
+    got = {c: r for c, _, r in d.rates}
+    assert set(got) == {"CNY", "AUD", "CAD", "CHF", "HKD", "SGD"}, "USD/EUR/GBP/JPY come from FBIL itself, never derived"
+    assert got["SGD"] == f"{fxfeed.Decimal('90.6') / fxfeed.Decimal('1.4540'):.6f}" and abs(float(got["CNY"]) - 11.6) < 0.05
+
+
+def test_cross_check_withholds_all_derived_rates_when_the_method_misprices_usd():
+    _, ecb = fxfeed.parse_ecb(ECB)
+    bad = fxfeed.derive_cross(fxfeed.Decimal("90.6"), date(2026, 10, 16), date(2026, 10, 16), ecb, fxfeed.TOP10, fxfeed.Decimal("80.00"))   # 4% off FBIL USD
+    assert bad.rates == [] and "cross-check failed" in bad.skipped[0]
+    stale = fxfeed.derive_cross(fxfeed.Decimal("90.6"), date(2026, 10, 16), date(2026, 10, 9), ecb, fxfeed.TOP10)
+    assert stale.rates == [] and "too far" in stale.skipped[0]
+
+
+def _cfg(monkeypatch, cross=True):
+    s = dataclasses.replace(config.settings, fx_feed_url="https://www.fbil.org.in/rates", fx_cross_url="https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml" if cross else "",
+                            fx_feed_currencies=fxfeed.TOP10)
+    monkeypatch.setattr(fxfeed, "settings", s)
+    monkeypatch.setattr(config, "settings", s)
+
+
+def test_run_feed_stores_four_official_and_six_derived_with_distinct_sources(db, monkeypatch):
+    _cfg(monkeypatch)
+    out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4, cross_transport=lambda u: ECB)
+    assert out["stored"] == 4 and out["derived"]["stored"] == 6 and out["derived"]["note"] is None
+    src = {r.currency: r.source for r in db.query(ExchangeRate).all()}
+    assert {c for c, s in src.items() if s == "fbil_reference"} == {"USD", "EUR", "GBP", "JPY"}
+    assert {c for c, s in src.items() if s == "derived_fbil_ecb"} == {"CNY", "AUD", "CAD", "CHF", "HKD", "SGD"}
+
+
+def test_without_a_cross_source_derived_currencies_are_reported_missing_not_invented(db, monkeypatch):
+    _cfg(monkeypatch, cross=False)
+    out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4)
+    assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "CNY" in out["derived"]["note"] and "manual entry" in out["derived"]["note"]
+    assert db.query(ExchangeRate).filter(ExchangeRate.currency == "CNY").count() == 0
+
+
+def test_cross_rate_failure_never_undoes_official_rates(db, monkeypatch):
+    _cfg(monkeypatch)
+    out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4, cross_transport=lambda u: b"<html>down</html>")
+    assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "cross-rate step failed" in out["derived"]["note"]
+
+
+def test_cross_host_must_be_allow_listed_in_strict_mode(db, monkeypatch):
+    _cfg(monkeypatch)
+    monkeypatch.setattr(config, "settings", dataclasses.replace(config.settings, residency_strict=True, deploy_region="ap-south-1", allowed_egress=("www.fbil.org.in",)))
+    out = fxfeed.run_feed(db, "t", transport=lambda u: FBIL4, cross_transport=lambda u: ECB)
+    assert out["stored"] == 4 and out["derived"]["stored"] == 0 and "blocked" in out["derived"]["note"]

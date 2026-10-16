@@ -45,7 +45,7 @@ DATA_RESIDENCY_STRICT=1           DEPLOY_REGION=ap-south-1
 ALLOWED_EGRESS_HOSTS=erp.corp.example.in,imap.corp.example.in,api.yourbank.co.in
 FEED_ROOT=/data/feeds             EXPORT_DIR=/data/exports
 ```
-The Postgres path is provided but **not yet exercised by the automated tests** (they run on SQLite). Run a full pass on Postgres before go-live.
+The full test-suite and the migrations have been run against PostgreSQL 16 (see CI `backend-postgres`), but never against a managed service or your data; run a rehearsal restore and upgrade on a copy before go-live.
 
 ## FX reference-rate feed and residency
-The feed calls the host in `FX_FEED_URL` (FBIL's publication). In strict mode that host must be in `ALLOWED_EGRESS_HOSTS` — adding `www.fbil.org.in` is a deliberate, narrow exception: the call sends no customer data, it only downloads public rates.
+The feed calls the host in `FX_FEED_URL` (FBIL's publication). If you also set `FX_CROSS_FEED_URL` (the ECB's daily euro rates, used to derive CNY/AUD/CAD/CHF/HKD/SGD), that host is outside India too and must be allow-listed on the same basis (public data in, nothing out). In strict mode that host must be in `ALLOWED_EGRESS_HOSTS` — adding `www.fbil.org.in` is a deliberate, narrow exception: the call sends no customer data, it only downloads public rates.

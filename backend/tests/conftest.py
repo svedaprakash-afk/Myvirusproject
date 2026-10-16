@@ -19,13 +19,23 @@ from app.security import hash_password  # noqa: E402
 TODAY = date(2026, 10, 16)
 
 
+PG_URL = os.environ.get("TEST_DATABASE_URL")   # run the whole suite on PostgreSQL:  TEST_DATABASE_URL=postgresql+psycopg://...
+
+
 @pytest.fixture()
 def db():
-    eng = make_engine("sqlite:///:memory:")
-    Base.metadata.create_all(eng)
+    if PG_URL:
+        eng = make_engine(PG_URL)
+        Base.metadata.drop_all(eng)
+        Base.metadata.create_all(eng)
+    else:
+        eng = make_engine("sqlite:///:memory:")
+        Base.metadata.create_all(eng)
     s = sessionmaker(bind=eng, expire_on_commit=False)()
     yield s
     s.close()
+    if PG_URL:
+        eng.dispose()
 
 
 class World:

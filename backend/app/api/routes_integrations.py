@@ -295,7 +295,13 @@ def fx_feed_status(user: User = Depends(require("view")), db: Session = Depends(
 
     last = db.execute(select(JobRun).where(JobRun.name == "fx_fetch").order_by(JobRun.id.desc()).limit(1)).scalars().first()
     host = urlparse(config.settings.fx_feed_url).hostname if config.settings.fx_feed_url else None
-    return {"configured": bool(host), "host": host, "currencies": list(config.settings.fx_feed_currencies), "source": "FBIL reference rate (published as the RBI reference rate since 2018)",
+    from .. import fxfeed
+
+    want = list(config.settings.fx_feed_currencies)
+    chost = urlparse(config.settings.fx_cross_url).hostname if config.settings.fx_cross_url else None
+    return {"configured": bool(host), "host": host, "currencies": want,
+            "direct_currencies": [c for c in want if c in fxfeed.FBIL_DIRECT], "derived_currencies": [c for c in want if c not in fxfeed.FBIL_DIRECT],
+            "cross_configured": bool(chost), "cross_host": chost, "cross_egress_allowed": egress_allowed(chost) if chost else None, "source": "FBIL reference rate (published as the RBI reference rate since 2018)",
             "egress_allowed": egress_allowed(host) if host else None,
             "last_run": None if not last else {"slot": last.slot, "status": last.status, "at": S.d(last.finished_at or last.started_at), "detail": last.detail}}
 

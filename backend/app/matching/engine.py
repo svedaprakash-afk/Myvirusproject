@@ -77,8 +77,12 @@ class Cand:
         return sum(a.applied for a in self.allocs)
 
 
-def inr(m: int) -> str:
-    return f"₹{from_minor(m):,.2f}"
+_SYM = {"INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "CN¥", "HKD": "HK$", "AUD": "A$", "CAD": "C$", "SGD": "S$"}
+
+
+def inr(m: int, ccy: str = "INR") -> str:
+    """Format minor units with the right symbol (name kept for existing callers; pass the currency for anything that is not base)."""
+    return f"{'−' if m < 0 else ''}{_SYM.get(ccy, ccy + ' ')}{abs(from_minor(m)):,.2f}"
 
 
 # ---------------------------------------------------------------------------------------------- allocation
@@ -88,6 +92,8 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
     total_open = sum(i.open_minor for i in invs)
     diff = pay - total_open
     allocs = [Alloc(i, i.open_minor, hit=hits.get(i.id)) for i in invs]
+    cur = invs[0].currency if invs else ctx.entity.base_currency
+    domestic = all(i.currency == ctx.entity.base_currency for i in invs)   # Indian TDS is only withheld on base-currency (domestic) invoices
     c = Cand(cust.id if cust else None, allocs, "", {})
 
     def settle_residual(resid: int, note_kind: str):
@@ -101,12 +107,12 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
         c.kind = "exact"
         if diff:
             settle_residual(diff, "tolerance")
-            c.evidence.append(f"Difference of {inr(abs(diff))} is within the {inr(tol)} tolerance and will be written off")
+            c.evidence.append(f"Difference of {inr(abs(diff), cur)} is within the {inr(tol, cur)} tolerance and will be written off")
         else:
-            c.evidence.append(f"Amount {inr(pay)} equals the open balance exactly")
+            c.evidence.append(f"Amount {inr(pay, cur)} equals the open balance exactly")
     elif diff < 0:
         best = None
-        if cust:
+        if cust and domestic:
             for sc in scenarios_for(cust):
                 tds_list = [tds_on(a.invoice, sc) for a in allocs]
                 T = sum(tds_list)
@@ -128,23 +134,23 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
                 settle_residual(resid, "tds")
             c.kind, c.tds_scenario = "tds", sc
             c.evidence.append(
-                f"Shortfall of {inr(-diff)} equals {sc.rate_bp / 100:g}% TDS on {'taxable value' if sc.base == 'taxable' else 'invoice total'}"
+                f"Shortfall of {inr(-diff, cur)} equals {sc.rate_bp / 100:g}% TDS on {'taxable value' if sc.base == 'taxable' else 'invoice total'}"
                 f" ({sc.section or 'TDS'}){' — customer\'s usual rate' if sc.usual else ' — NOT this customer\'s usual rate'}")
         elif 0 < -diff <= max_charge:
             # foreign receipts routinely arrive net of intermediary/correspondent bank charges; book them as charges, not write-offs
             settle_residual(diff, "charge")
             c.writeoff_kind = "bank_charge"
-            c.evidence.append(f"Shortfall of {inr(-diff)} looks like intermediary bank charges on a foreign receipt (limit {inr(max_charge)})")
+            c.evidence.append(f"Shortfall of {inr(-diff, cur)} looks like intermediary bank charges on a foreign receipt (limit {inr(max_charge, cur)})")
         else:
             remaining = pay
             for a in allocs:
                 a.applied = max(min(remaining, a.invoice.open_minor), 0) if a.invoice.open_minor > 0 else a.invoice.open_minor
                 remaining -= a.applied
             c.kind, c.short = "partial", total_open - pay
-            c.warnings.append(f"Short by {inr(-diff)} and not explained by TDS or tolerance")
+            c.warnings.append(f"Short by {inr(-diff, cur)} and not explained by TDS or tolerance")
     else:
         c.kind, c.unapplied = "over", diff
-        c.warnings.append(f"Payment exceeds the open balance of these invoices by {inr(diff)}")
+        c.warnings.append(f"Payment exceeds the open balance of these invoices by {inr(diff, cur)}")
     return c
 
 
@@ -159,7 +165,15 @@ def balance_cash(c: Cand, pay: int) -> None:
 
 
 def charge_allowance(ctx: Ctx, txn) -> int:
-    return int(ctx.cfg.get("foreign_bank_charge_max_minor", 0)) if txn.currency != ctx.entity.base_currency else 0
+    """Intermediary/correspondent charges are a roughly constant amount in the BASE currency (default ₹5,000 ≈ $60); express that limit in the
+    receipt's currency via the rate table so ¥ and $ are treated alike. No rate => no allowance (never guess)."""
+    from ..fx import from_base, rate_on
+
+    base = ctx.entity.base_currency
+    if txn.currency == base:
+        return 0
+    r = rate_on(ctx.db, txn.currency, txn.txn_date, base)
+    return from_base(int(ctx.cfg.get("foreign_bank_charge_max_base_minor", 500_000)), r) if r else 0
 
 
 def base_feats(ctx: Ctx, txn: PaymentTransaction, cust: Customer | None, guess: Guess | None, c: Cand) -> dict:
@@ -486,7 +500,7 @@ def process_transaction(ctx: Ctx, txn: PaymentTransaction) -> dict:
         if twin:  # only the *later* line is the duplicate; the original must stay matchable
             txn.status = TxnStatus.exception
             open_exception(ctx, txn, ExceptionType.duplicate_payment, pay,
-                           f"Same UTR {txn.utr} already appears on receipt #{twin.id} ({inr(twin.amount_minor)} on {twin.txn_date}); likely a duplicate statement line",
+                           f"Same UTR {txn.utr} already appears on receipt #{twin.id} ({inr(twin.amount_minor, twin.currency)} on {twin.txn_date}); likely a duplicate statement line",
                            suggestions=[{"action": "mark_duplicate", "label": "Mark as duplicate statement line (no posting)"}])
             return {"outcome": "exception", "type": "duplicate_payment"}
 
@@ -706,15 +720,16 @@ def _propose(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, am
 
 def _summary(txn: PaymentTransaction, c: Cand) -> str:
     nums = ", ".join(a.invoice.number for a in c.allocs)
-    bits = [f"Apply {inr(txn.receivable_minor)} to {nums}"]
+    cc = txn.currency
+    bits = [f"Apply {inr(txn.receivable_minor, cc)} to {nums}"]
     if c.tds:
-        bits.append(f"with {inr(c.tds)} TDS credit")
+        bits.append(f"with {inr(c.tds, cc)} TDS credit")
     if c.writeoff:
-        bits.append(f"and {inr(abs(c.writeoff))} tolerance {'write-off' if c.writeoff > 0 else 'gain'}")
+        bits.append(f"and {inr(abs(c.writeoff), cc)} tolerance {'write-off' if c.writeoff > 0 else 'gain'}")
     if c.unapplied:
-        bits.append(f"leaving {inr(c.unapplied)} unapplied")
+        bits.append(f"leaving {inr(c.unapplied, cc)} unapplied")
     if c.short:
-        bits.append(f"leaving {inr(c.short)} short-paid")
+        bits.append(f"leaving {inr(c.short, cc)} short-paid")
     return " ".join(bits)
 
 

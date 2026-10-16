@@ -18,6 +18,9 @@ describe("format", () => {
     expect(money(1234567)).toBe("₹12,345.67");
     expect(money(5000000, { ccy: "EUR", sign: true })).toBe("+€50,000.00");
     expect(compact(250_000_000, "USD")).toBe("$2.50 M");
+    expect(money(100, "CNY")).toBe("CN¥1.00");
+    expect(money(100, "HKD")).toBe("HK$1.00");
+    expect(money(12345, "JPY")).toBe("¥123.45");
   });
   it("parses rupee input to exact paise without float error", () => {
     expect(toMinor("1,18,000.10")).toBe(11800010);

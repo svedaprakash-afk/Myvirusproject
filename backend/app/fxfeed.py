@@ -21,7 +21,10 @@ from .config import check_egress, settings
 from .fx import MICRO, parse_rate
 from .models import ExchangeRate, Invoice
 
-KNOWN = ("USD", "EUR", "GBP", "JPY", "AED", "SGD", "AUD", "CAD", "CHF", "CNY", "HKD")
+# Ten most-traded currencies (BIS Triennial Survey ordering, excluding INR) + AED, which matters to Indian trade.
+TOP10 = ("USD", "EUR", "JPY", "GBP", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD")
+KNOWN = TOP10 + ("AED",)
+FBIL_DIRECT = ("USD", "EUR", "GBP", "JPY")        # the RBI/FBIL reference-rate set; everything else must be derived or entered
 _CCY = re.compile(r"\b(" + "|".join(KNOWN) + r")\b", re.I)
 _DATES = [(re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b"), "ymd"), (re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b"), "dmy"),
           (re.compile(r"\b(\d{1,2})[ \-]([A-Za-z]{3})[a-z]*[ ,\-]*(\d{4})\b"), "dMy")]
@@ -144,12 +147,78 @@ def store_rates(db: Session, parsed: Parsed, source: str, actor: str, actor_id: 
     return {"stored": stored, "rejected": rejected, "skipped": parsed.skipped[:20], "parsed": len(parsed.rates)}
 
 
-def run_feed(db: Session, actor: str, actor_id: int | None = None, transport=None, url: str | None = None) -> dict:
+def parse_ecb(data: bytes) -> tuple[date, dict[str, Decimal]]:
+    """ECB daily euro reference rates (eurofxref-daily.xml): <Cube time='2026-10-16'><Cube currency='USD' rate='1.0856'/>...  Units of CCY per 1 EUR."""
+    from defusedxml import ElementTree as ET
+    from defusedxml.common import DefusedXmlException
+
+    try:
+        root = ET.fromstring(data)
+    except (ET.ParseError, DefusedXmlException) as e:
+        raise ValueError(f"Invalid cross-rate XML: {e}")
+    when, rates = None, {}
+    for el in root.iter():
+        tag = el.tag.rsplit("}", 1)[-1]
+        if tag == "Cube" and el.get("time"):
+            when = date.fromisoformat(el.get("time"))
+        elif tag == "Cube" and el.get("currency") and el.get("rate"):
+            try:
+                v = Decimal(el.get("rate"))
+            except InvalidOperation:
+                continue
+            if v > 0:
+                rates[el.get("currency").upper()] = v
+    if when is None or not rates:
+        raise ValueError("Cross-rate feed has no dated rates (layout changed?)")
+    return when, rates
+
+
+def derive_cross(eur_inr: Decimal, eur_date: date, ecb_date: date, ecb: dict[str, Decimal], wanted: tuple[str, ...], fbil_usd: Decimal | None = None) -> Parsed:
+    """INR per 1 CCY = (INR per EUR) / (CCY per EUR). Indicative only: the two sources fix at different times of day, so derived rates carry
+    a few tenths of a percent of timing skew. Refused if the dates are far apart or if the same method misprices USD against FBIL's own USD."""
+    out = Parsed()
+    if abs((eur_date - ecb_date).days) > 3:
+        out.skipped.append(f"cross-rate date {ecb_date} is too far from the FBIL date {eur_date}")
+        return out
+    if fbil_usd is not None and "USD" in ecb:
+        chk = eur_inr / ecb["USD"]
+        if abs(chk - fbil_usd) / fbil_usd > Decimal("0.02"):
+            out.skipped.append(f"cross-check failed: derived USD/INR {chk:.4f} vs FBIL {fbil_usd:.4f} differ by more than 2% — derived rates withheld")
+            return out
+    for c in wanted:
+        if c in FBIL_DIRECT or c == "INR" or c not in ecb:
+            continue
+        out.rates.append((c, eur_date, f"{eur_inr / ecb[c]:.6f}"))
+    return out
+
+
+def run_feed(db: Session, actor: str, actor_id: int | None = None, transport=None, url: str | None = None, cross_transport=None) -> dict:
     data, name = fetch_feed(url, transport)
     parsed = parse_reference_rates(data, name, as_of=date.today(), wanted=settings.fx_feed_currencies)
     if not parsed.rates:
         raise ValueError("The feed was fetched but no recognisable rates were found (layout changed?). Nothing stored.")
-    return store_rates(db, parsed, "fbil_reference", actor, actor_id)
+    result = store_rates(db, parsed, "fbil_reference", actor, actor_id)
+    need = [c for c in settings.fx_feed_currencies if c not in FBIL_DIRECT and c != "INR"]
+    result["derived"] = {"requested": need, "stored": 0, "note": None}
+    if need and settings.fx_cross_url:
+        try:
+            raw, _ = fetch_feed(settings.fx_cross_url, cross_transport)
+            ecb_date, ecb = parse_ecb(raw)
+            eur = max((r for r in parsed.rates if r[0] == "EUR"), key=lambda r: r[1], default=None)
+            usd = next((Decimal(r[2]) for r in parsed.rates if r[0] == "USD" and eur and r[1] == eur[1]), None)
+            if eur is None:
+                result["derived"]["note"] = "FBIL feed carried no EUR rate; cannot derive cross rates"
+            else:
+                d = derive_cross(Decimal(eur[2]), eur[1], ecb_date, ecb, tuple(need), usd)
+                if d.rates:
+                    result["derived"]["stored"] = store_rates(db, d, "derived_fbil_ecb", actor, actor_id)["stored"]
+                result["derived"]["note"] = "; ".join(d.skipped) or None
+                result["derived"]["missing_in_source"] = [c for c in need if c not in ecb]
+        except Exception as e:      # a cross-rate failure must never undo the official rates that were already stored
+            result["derived"]["note"] = f"cross-rate step failed: {e}"
+    elif need:
+        result["derived"]["note"] = "FX_CROSS_FEED_URL not configured: " + ", ".join(need) + " are not published by FBIL and need manual entry or a cross-rate source"
+    return result
 
 
 def stale_currencies(db: Session, entity_id: int, today: date | None = None, max_age_days: int = 5) -> list[dict]:

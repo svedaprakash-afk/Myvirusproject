@@ -249,5 +249,5 @@ def cancel_batch(db: Session, batch: PostingBatch, user: User) -> None:
         db.delete(ln)
     batch.status = BatchStatus.failed
     batch.error = "cancelled"
-    batch.idempotency_key = batch.idempotency_key + f"-x{batch.id}"
+    batch.idempotency_key = hashlib.sha256(f"{batch.idempotency_key}|cancelled|{batch.id}".encode()).hexdigest()   # stays 64 chars (PostgreSQL enforces VARCHAR length; SQLite does not)
     audit.log(db, user.name, "batch.cancelled", "PostingBatch", batch.id, batch.entity_id, {}, user.id)

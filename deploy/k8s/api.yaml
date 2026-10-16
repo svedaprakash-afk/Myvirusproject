@@ -11,9 +11,9 @@ spec:
       automountServiceAccountToken: false
       securityContext: { runAsNonRoot: true, runAsUser: 10001, seccompProfile: { type: RuntimeDefault } }
       initContainers:
-        - name: init-db
+        - name: migrate
           image: cashapp-api
-          command: ["python", "-m", "app.cli", "init-db"]
+          command: ["python", "-m", "app.cli", "migrate"]
           envFrom: [{ configMapRef: { name: cashapp-config } }, { secretRef: { name: cashapp-secrets } }]
           securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
           resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { cpu: 500m, memory: 256Mi } }

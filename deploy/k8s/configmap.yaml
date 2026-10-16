@@ -10,7 +10,8 @@ data:
   DEPLOY_REGION: "ap-south-1"          # set to YOUR Indian region label (see deploy/README.md for accepted values)
   ALLOWED_EGRESS_HOSTS: "erp.corp.example.in,imap.corp.example.in,www.fbil.org.in"
   FX_FEED_URL: ""                      # set to the live FBIL publication after verifying it (docs/DEPLOYMENT_INDIA.md)
-  FX_FEED_CURRENCIES: "USD,EUR,GBP,JPY"
+  FX_FEED_CURRENCIES: "USD,EUR,JPY,GBP,CNY,AUD,CAD,CHF,HKD,SGD"   # top-10 most traded; FBIL publishes USD/EUR/GBP/JPY only
+  FX_CROSS_FEED_URL: ""                # optional: ECB daily euro reference rates (add the host to ALLOWED_EGRESS_HOSTS) to DERIVE the other six
   EXPORT_DIR: "/data/exports"
   FEED_ROOT: "/data/feeds"
   CORS_ORIGINS: "https://cash.corp.example.in"

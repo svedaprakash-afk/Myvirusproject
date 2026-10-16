@@ -165,3 +165,78 @@ def test_tolerance_is_per_currency(w):
     w.run(t)
     p = prop(w, t)
     assert p.writeoff_minor == 150 and p.writeoff_kind == "tolerance"
+
+
+# ------------------------------------------------------------------------------------------------ top-10 currencies
+@pytest.mark.parametrize("ccy,rate_,booking", [("JPY", "0.5510", 540_000), ("GBP", "108.10", 107_000_000), ("CNY", "11.60", 11_400_000), ("AUD", "54.50", 54_000_000),
+                                              ("CAD", "60.50", 60_000_000), ("CHF", "94.00", 93_000_000), ("HKD", "10.65", 10_600_000), ("SGD", "62.50", 62_000_000), ("EUR", "90.60", 90_000_000)])
+def test_every_top_ten_currency_matches_and_posts_balanced_with_fx(w, ccy, rate_, booking):
+    """JPY has no minor unit; it is carried as 1/100 yen like every other currency so arithmetic is uniform (documented limitation: no fractional-yen semantics)."""
+    c = w.customer("X9", f"Buyer {ccy} Co")
+    inv = w.invoice(c, f"EXP/{ccy}/1", 5_000_000 if ccy == "JPY" else 10_000_00, gst_pct=0, currency=ccy, booking_rate=booking)
+    t = w.credit(inv.total_minor, f"SWIFT CR-BUYER {ccy} CO-EXP/{ccy}/1", currency=ccy, channel="SWIFT", d=D)
+    rate(w, ccy, rate_)
+    w.run(t)
+    p = prop(w, t)
+    assert p.auto and [a.invoice.number for a in p.allocations] == [f"EXP/{ccy}/1"]
+    b = posting.build_batch(w.db, w.e, w.users["ar_manager"])
+    assert sum(l.base_debit_minor for l in b.lines) == sum(l.base_credit_minor for l in b.lines)
+    ar = next(l for l in b.lines if l.line_type == "ar_clearance")
+    assert ar.currency == ccy and ar.rate_micro == booking
+    assert any(l.line_type in ("fx_gain", "fx_loss") for l in b.lines)
+
+
+def test_narration_fx_amount_is_parsed_for_each_top_ten_currency():
+    from app.indian import parse_narration
+
+    for ccy in ("USD", "EUR", "JPY", "GBP", "CNY", "AUD", "CAD", "CHF", "HKD", "SGD"):
+        r = parse_narration(f"INWARD REMITTANCE {ccy} 12,345.60 FROM BUYER CO-FIRC 1-SWIFT X")
+        assert (r.extra.get("fx_ccy"), r.extra.get("fx_minor")) == (ccy, 1234560), ccy
+
+
+def test_bank_charge_allowance_scales_with_the_currency(w):
+    """The same ~₹ limit must cover a ¥ charge and a $ charge: ¥3,500 (~₹1,900) is a plausible fee; ¥50,000 (~₹27,500) is not."""
+    c = w.customer("X8", "Yen Buyer KK")
+    inv = w.invoice(c, "EXP/JPY/9", 100_000_000, gst_pct=0, currency="JPY", booking_rate=540_000)       # ¥1,000,000 (carried as 1/100 yen)
+    t1 = w.credit(inv.total_minor - 350_000, "SWIFT CR-YEN BUYER KK-EXP/JPY/9", currency="JPY", channel="SWIFT", d=D)   # ¥3,500 short
+    rate(w, "JPY", "0.5510")
+    w.run(t1)
+    p1 = prop(w, t1)
+    assert p1.writeoff_kind == "bank_charge" and p1.writeoff_minor == 350_000 and p1.short_minor == 0
+    inv2 = w.invoice(c, "EXP/JPY/10", 100_000_000, gst_pct=0, currency="JPY", booking_rate=540_000)
+    t2 = w.credit(inv2.total_minor - 5_000_000, "SWIFT CR-YEN BUYER KK-EXP/JPY/10", currency="JPY", channel="SWIFT", d=D)   # ¥50,000 short
+    w.run(t2)
+    p2 = prop(w, t2)
+    assert p2.writeoff_kind != "bank_charge" and p2.short_minor == 5_000_000
+
+
+def test_no_rate_means_no_bank_charge_allowance(w):
+    c = globex(w)
+    inv = w.invoice(c, "EXP/26-27/0099", 10_000_00, gst_pct=0, currency="USD", booking_rate=83_000_000)
+    t = w.credit(inv.total_minor - 3_500, "SWIFT CR-GLOBEX CORPORATION-EXP/26-27/0099", currency="USD", channel="SWIFT", d=D)
+    w.run(t)   # no USD rate in the table
+    p = prop(w, t)
+    assert p.writeoff_kind != "bank_charge" and p.short_minor == 3_500
+
+
+def test_foreign_currency_shortfall_is_never_explained_as_indian_tds(w):
+    """Regression: a 5% yen shortfall was 'explained' as 194H TDS. Foreign buyers do not withhold Indian TDS."""
+    c = w.customer("X7", "Osaka Trading KK", tds_bp=200)
+    inv = w.invoice(c, "EXP/JPY/20", 100_000_000, gst_pct=0, currency="JPY", booking_rate=540_000)
+    t = w.credit(inv.total_minor - 5_000_000, "SWIFT CR-OSAKA TRADING KK-EXP/JPY/20", currency="JPY", channel="SWIFT", d=D)
+    rate(w, "JPY", "0.5510")
+    w.run(t)
+    p = prop(w, t)
+    assert p.tds_minor == 0 and p.short_minor == 5_000_000 and not p.auto
+    assert not any("TDS" in e for e in p.explanation["evidence"])
+
+
+def test_explanations_use_the_right_currency_symbol(w):
+    c = globex(w)
+    inv = w.invoice(c, "EXP/26-27/0050", 10_000_00, gst_pct=0, currency="USD", booking_rate=83_000_000)
+    t = w.credit(inv.total_minor - 2_000_00, "SWIFT CR-GLOBEX CORPORATION-EXP/26-27/0050", currency="USD", channel="SWIFT", d=D)
+    rate(w, "USD", "83.10")
+    w.run(t)
+    p = prop(w, t)
+    text = " ".join([p.explanation["summary"], *p.explanation["evidence"], *p.explanation["warnings"]])
+    assert "$" in text and "₹" not in text

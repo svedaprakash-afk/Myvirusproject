@@ -17,7 +17,9 @@ log = logging.getLogger("cashapp")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     assert_safe_for_production()
-    Base.metadata.create_all(engine)
+    from . import migrate
+
+    migrate.ensure_schema(engine, settings.auto_migrate)
     yield
 
 

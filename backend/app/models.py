@@ -130,7 +130,7 @@ DEFAULT_ENTITY_CONFIG = {
     "auto_approve_amount_only": False,   # allow auto-approval on exact amount without any invoice reference
     "auto_approve_cross_currency": True,   # auto-approve cross-currency ONLY when the payer stated the foreign amount (estimates never auto)
     "fx_spread_bp": 150,                   # max deviation between bank-credited INR and invoice value at the rate table (1.5%)
-    "foreign_bank_charge_max_minor": 6000, # intermediary/correspondent charges deducted from foreign receipts (e.g. $60)
+    "foreign_bank_charge_max_base_minor": 500_000,  # intermediary bank charges tolerated on a foreign receipt, in BASE currency (₹5,000 ≈ $60)
     "straight_through_release": False,  # auto-release posting batches without a human
     "sla_hours": 48,
     "max_subset_size": 8,

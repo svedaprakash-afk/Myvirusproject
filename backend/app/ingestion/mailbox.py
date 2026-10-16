@@ -98,6 +98,8 @@ def process_email(db: Session, entity_id: int, raw: bytes, cfg: dict | None, act
     cfg = cfg or {}
     msg = email.message_from_bytes(raw, policy=policy.default)
     mid = (msg.get("Message-ID") or "").strip() or "sha:" + hashlib.sha256(raw).hexdigest()[:32]
+    if len(mid) > 200:
+        mid = "sha:" + hashlib.sha256(mid.encode()).hexdigest()
     if db.execute(select(RemittanceDocument.id).where(RemittanceDocument.entity_id == entity_id, RemittanceDocument.source_ref == mid)).first():
         return {"status": "duplicate", "message_id": mid}
     sender = parseaddr(msg.get("From", ""))[1].lower()

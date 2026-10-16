@@ -56,9 +56,9 @@ def persist_raw(db: Session, bank: BankAccount, raws: list[RawTxn], fmt: str, fi
         txn = PaymentTransaction(
             entity_id=bank.entity_id, bank_account_id=bank.id, source="gateway" if gateway else "statement", source_batch=batch_id,
             txn_date=t.txn_date, value_date=t.value_date, direction=t.direction, amount_minor=t.amount_minor,
-            fee_minor=t.fee_minor, currency=t.currency or bank.currency, channel=pn.channel if not gateway else "GATEWAY",
-            utr=utr, narration=t.narration, payer_name=pn.payer_name, payer_ifsc=pn.payer_ifsc, payer_vpa=pn.payer_vpa,
-            bank_ref=t.bank_ref, balance_minor=t.balance_minor, dedupe_key=key, status=status,
+            fee_minor=t.fee_minor, currency=t.currency or bank.currency, channel=(pn.channel if not gateway else "GATEWAY")[:12],
+            utr=(utr or None) and utr[:40], narration=t.narration, payer_name=(pn.payer_name or None) and pn.payer_name[:250], payer_ifsc=pn.payer_ifsc,
+            payer_vpa=(pn.payer_vpa or None) and pn.payer_vpa[:100], bank_ref=(t.bank_ref or None) and t.bank_ref[:60], balance_minor=t.balance_minor, dedupe_key=key, status=status,
             extra={"fmt": fmt, "kind": pn.kind, "remark": pn.remark, **({"rule": pn.extra["rule"]} if "rule" in pn.extra else {}), **(t.extra or {})},
             fx_ccy=pn.extra.get("fx_ccy"), fx_minor=pn.extra.get("fx_minor"),
         )
@@ -168,6 +168,10 @@ def import_open_items(db: Session, entity: LegalEntity, rows: list[dict], actor:
             code = (r.get("customer_code") or "").strip() or normalise_ref(name)[:20]
             if not number or not code:
                 raise ValueError("missing invoice number or customer")
+            for label, val, mx in (("invoice number", number, 60), ("customer code", code, 40), ("customer name", name, 250), ("PO reference", r.get("po_ref") or "", 60),
+                                   ("IRN", r.get("irn") or "", 64), ("e-way bill", r.get("eway") or "", 20), ("ack no", r.get("ack_no") or "", 30)):
+                if len(val) > mx:
+                    raise ValueError(f"{label} is {len(val)} characters (maximum {mx})")
             gstin = (r.get("gstin") or "").strip().upper() or None
             pan = ((r.get("pan") or "").strip().upper() or pan_from_gstin(gstin))
             if gstin and not is_valid_gstin(gstin):
@@ -254,6 +258,7 @@ def _pending_by_invoice(db: Session, entity_id: int) -> dict[int, int]:
 
 
 def _learn(db: Session, entity_id: int, customer_id: int, kind: str, value: str, source: str) -> None:
+    value = (value or "")[:200]          # column is VARCHAR(200); PostgreSQL rejects longer values
     if not value:
         return
     row = db.execute(select(CustomerIdentifier).where(

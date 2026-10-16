@@ -11,6 +11,8 @@ class Settings:
     jwt_secret: str = field(default_factory=lambda: os.getenv("JWT_SECRET", "dev-only-change-me-dev-only-change-me"))
     jwt_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("JWT_TTL_MINUTES", "480")))
     env: str = field(default_factory=lambda: os.getenv("APP_ENV", "dev"))
+    # Dev/test auto-upgrade the schema on start; production must NOT (migrations run as a separate, locked step) and refuses to start on a stale schema.
+    auto_migrate: bool = field(default_factory=lambda: os.getenv("AUTO_MIGRATE", "0" if os.getenv("APP_ENV", "dev") == "prod" else "1") == "1")
     allow_demo: bool = field(default_factory=lambda: os.getenv("ALLOW_DEMO", "1") == "1")
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(os.getenv("CORS_ORIGINS", "http://localhost:5173").split(","))
@@ -26,7 +28,10 @@ class Settings:
     # FX reference-rate feed (FBIL publishes the RBI reference rate). The URL is configuration, not code: it could not be verified
     # from the build environment, so the operator must point it at the live publication and confirm one fetch.
     fx_feed_url: str = field(default_factory=lambda: os.getenv("FX_FEED_URL", ""))
-    fx_feed_currencies: tuple[str, ...] = field(default_factory=lambda: tuple(c.strip().upper() for c in os.getenv("FX_FEED_CURRENCIES", "USD,EUR,GBP,JPY").split(",") if c.strip()))
+    fx_feed_currencies: tuple[str, ...] = field(default_factory=lambda: tuple(c.strip().upper() for c in os.getenv("FX_FEED_CURRENCIES", "USD,EUR,JPY,GBP,CNY,AUD,CAD,CHF,HKD,SGD").split(",") if c.strip()))
+    # Optional cross-rate source for currencies FBIL does not publish (it publishes USD, EUR, GBP, JPY). The ECB's daily euro reference
+    # rates are used with FBIL's EUR/INR to derive INR rates. Derived rates are NOT official reference rates and are labelled as such.
+    fx_cross_url: str = field(default_factory=lambda: os.getenv("FX_CROSS_FEED_URL", ""))
     feed_root: str = field(default_factory=lambda: os.getenv("FEED_ROOT", "./feeds"))
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", "./exports"))
 

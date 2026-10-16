@@ -19,7 +19,7 @@ file volume, (4) an HTTPS ingress, (5) a secrets store. Nothing in the code call
 2. Build and push the two images to a registry you control: `backend/Dockerfile` (API **and** worker) and `frontend/Dockerfile`.
 3. Create `cashapp-secrets` with `DATABASE_URL` (`sslmode=require`), `JWT_SECRET` (≥ 32 random bytes), and any `*_PASSWORD` / `*_TOKEN` / `*_SECRET` referenced by mailbox, bank-feed and webhook configuration. These are referenced **by environment-variable name**; the app never stores them.
 4. Edit `deploy/k8s/configmap.yaml` (`DEPLOY_REGION`, `ALLOWED_EGRESS_HOSTS`, `FX_FEED_URL`, `CORS_ORIGINS`), `ingress.yaml` (host, class, TLS) and `networkpolicy.yaml` (replace the PLACEHOLDER CIDRs).
-5. `kubectl apply -k deploy/k8s`. The API's init container runs `python -m app.cli init-db`; create the first admin with `kubectl exec deploy/api -- python -m app.cli create-user you@corp.in --name "You" --role admin`.
+5. `kubectl apply -k deploy/k8s`. The API's init container runs `python -m app.cli migrate`; create the first admin with `kubectl exec deploy/api -- python -m app.cli create-user you@corp.in --name "You" --role admin`.
 6. Verify: `/health` reports `residency_strict: true` and your region; Connections → Data residency is green; run **Fetch now** on the FX tab once and compare with fbil.org.in.
 
 Docker Compose (`docker-compose.yml`) is provided for a single VM; it runs api + worker + web + Postgres with the same strict settings.
@@ -27,6 +27,6 @@ Docker Compose (`docker-compose.yml`) is provided for a single VM; it runs api +
 ## What is and isn't verified
 - `backend/tests/test_deploy_manifests.py` lints the manifests (hardened pod settings, probes, no secrets, default-deny egress, no `0.0.0.0/0`).
 - **Nothing here has been applied to a real cluster**, and no Terraform/Helm is provided: cloud-specific IaC would be unverifiable here and a wrong guess is worse than none. Treat the manifests as a reviewed starting point.
-- **Schema migrations are not implemented.** `init-db` creates missing tables only; it will not alter existing ones. Add Alembic before the first production schema change.
+- **Migrations**: Alembic, run by the `migrate` init container (a Postgres advisory lock serialises replicas). In production the API refuses to start if the schema is not at the release's revision. Tested on PostgreSQL 16 and SQLite, including 4 concurrent migrators; never run against your managed PostgreSQL service. Always take a backup before upgrading; `downgrade` loses data.
 - Exports and feed files use a shared volume; there is no object-storage backend yet.
 - The standard NetworkPolicy cannot match hostnames; use FQDN-capable policies if your CNI offers them.

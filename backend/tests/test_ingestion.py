@@ -163,3 +163,19 @@ def test_camt053_rejects_xxe_and_entity_bombs():
     bomb = b'<?xml version="1.0"?><!DOCTYPE l [<!ENTITY a "aaaa"><!ENTITY b "&a;&a;&a;&a;">]><Document><Ntry>&b;</Ntry></Document>'
     with pytest.raises(StatementError):
         parse_camt053(bomb)
+
+
+def test_overlong_values_never_crash_an_import_or_a_statement_load(w):
+    """PostgreSQL enforces VARCHAR lengths (SQLite does not): over-long inputs must be rejected/truncated by the app with a clear message."""
+    rows = [{"invoice_no": "X" * 120, "customer_code": "C", "customer_name": "Name", "total": "100", "invoice_date": "2026-09-01"},
+            {"invoice_no": "OK-1", "customer_code": "C" * 80, "customer_name": "Name", "total": "100", "invoice_date": "2026-09-01"},
+            {"invoice_no": "OK-2", "customer_code": "C2", "customer_name": "N" * 400, "total": "100", "invoice_date": "2026-09-01"},
+            {"invoice_no": "OK-3", "customer_code": "C3", "customer_name": "Fine", "total": "100", "invoice_date": "2026-09-01"}]
+    out = ing.import_open_items(w.db, w.e, rows, "t", None)
+    assert out["rejected"] == 3 and out["invoices_created"] == 1 and any("maximum 60" in x for x in out["warnings"])
+    w.db.flush()
+    big = ("Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance\n01/10/26,NEFT-HDFCN26274000111-" + "A" * 400 + "-INV 1,,1000.00,5000.00\n").encode()
+    assert ing.ingest_statement(w.db, w.bank, "s.csv", big, "t", None)["inserted"] == 1
+    w.db.flush()
+    t = w.db.execute(select(PaymentTransaction)).scalar_one()
+    assert len(t.payer_name or "") <= 250 and len(t.utr or "") <= 40

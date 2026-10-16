@@ -98,6 +98,14 @@ def _seed_export_business(db: Session, e: LegalEntity, banks: dict) -> dict:
         if d.weekday() < 5:
             db.add(ExchangeRate(currency="USD", rate_date=d, rate_micro=parse_rate(f"{r_usd:.4f}"), source="seed"))
             db.add(ExchangeRate(currency="EUR", rate_date=d, rate_micro=parse_rate(f"{r_eur:.4f}"), source="seed"))
+    others = {"GBP": 108.0, "JPY": 0.55, "CNY": 11.6, "AUD": 54.5, "CAD": 60.5, "CHF": 94.0, "HKD": 10.65, "SGD": 62.5}
+    for c, base in others.items():
+        v = base
+        for k in range(30, -1, -1):
+            d = today - timedelta(days=k)
+            v += rng.uniform(-0.003, 0.003) * base - 0.03 * (v - base)
+            if d.weekday() < 5:
+                db.add(ExchangeRate(currency=c, rate_date=d, rate_micro=parse_rate(f"{v:.6f}"), source="seed"))
     db.flush()
     cust = [("X1", "Globex Corporation", "USD"), ("X2", "Nordwind Maschinen GmbH", "EUR")]
     rows, inv = [], {}

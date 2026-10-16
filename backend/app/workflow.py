@@ -139,7 +139,7 @@ def resolve_exception(db: Session, user: User, ex: ExceptionCase, action: str, p
         if not cust or cust.entity_id != ex.entity_id or not txn:
             raise WorkflowError("Choose a customer of this entity")
         txn.customer_id, txn.customer_confidence = cust.id, 1.0
-        n = normalise_name(txn.payer_name)
+        n = normalise_name(txn.payer_name)[:200]
         if n and not db.execute(select(CustomerIdentifier).where(CustomerIdentifier.entity_id == ex.entity_id, CustomerIdentifier.customer_id == cust.id,
                                                                  CustomerIdentifier.kind == "name", CustomerIdentifier.value == n)).first():
             db.add(CustomerIdentifier(entity_id=ex.entity_id, customer_id=cust.id, kind="name", value=n, source="analyst"))

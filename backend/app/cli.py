@@ -1,4 +1,4 @@
-"""Operational CLI.  python -m app.cli init-db | create-admin EMAIL | seed-demo"""
+"""Operational CLI.  migrate | status | create-migration MSG | downgrade REV --yes | create-user | seed-demo | fetch-fx | worker"""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,13 @@ from .security import hash_password
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="app.cli")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init-db")
+    sub.add_parser("migrate", help="upgrade the database schema to the latest revision (locked; safe to run from several pods)")
+    sub.add_parser("init-db", help="alias of migrate (kept for existing deployment manifests)")
+    sub.add_parser("status", help="show current vs latest schema revision and any drift from the models")
+    cm = sub.add_parser("create-migration", help="developer: autogenerate a new revision from model changes")
+    cm.add_argument("message")
+    dg = sub.add_parser("downgrade", help="DANGEROUS: roll the schema back (data in dropped columns/tables is lost)")
+    dg.add_argument("revision"); dg.add_argument("--yes", action="store_true")
     a = sub.add_parser("create-user")
     a.add_argument("email"); a.add_argument("--name", required=True); a.add_argument("--role", choices=[r.value for r in Role], default="admin")
     sub.add_parser("seed-demo")
@@ -22,9 +28,34 @@ def main(argv=None) -> int:
     sub.add_parser("worker", help="run scheduled jobs: FX fetch, inbox polling, bank-feed sync, matching")
     args = ap.parse_args(argv)
     assert_safe_for_production()
-    Base.metadata.create_all(engine)
-    if args.cmd == "init-db":
-        print("tables ready"); return 0
+    from . import migrate
+
+    if args.cmd in ("migrate", "init-db"):
+        try:
+            print("schema at revision", migrate.upgrade(engine))
+        except migrate.SchemaError as e:
+            print(f"ERROR: {e}", file=sys.stderr); return 2
+        return 0
+    if args.cmd == "status":
+        cur, h = migrate.current(engine), migrate.head()
+        d = migrate.drift(engine) if cur else []
+        print(f"current={cur} head={h} up_to_date={cur == h} drift={len(d)}")
+        for x in d[:10]:
+            print("  drift:", x)
+        return 0 if cur == h and not d else 1
+    if args.cmd == "create-migration":
+        from alembic import command
+
+        command.revision(migrate._cfg(), message=args.message, autogenerate=True)
+        print("review the generated file before committing it"); return 0
+    if args.cmd == "downgrade":
+        if not args.yes:
+            print("refusing: pass --yes to confirm data loss", file=sys.stderr); return 2
+        migrate.downgrade(engine, args.revision); print("downgraded to", args.revision); return 0
+    try:
+        migrate.ensure_schema(engine, settings.auto_migrate)
+    except migrate.SchemaError as e:
+        print(f"ERROR: {e}", file=sys.stderr); return 2
     if args.cmd == "worker":
         import logging
 

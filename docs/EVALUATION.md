@@ -28,3 +28,8 @@ real data will find more.
 - Bank layouts (HDFC, ICICI, SBI, Axis, Kotak, Yes, IDFC FIRST, PNB; BoB/Canara/IndusInd templates only) and 40 narration styles were written **from memory** and are marked unverified in the UI. `tests/test_bank_layouts.py` passing means the parser matches those recollections.
 - The FBIL parser is tested on fixtures written from secondary descriptions; the live format is unverified.
 - Scheduling (FX window, retries, slot locks, inbox/bank sync) is tested with injected clocks and fake transports.
+
+## Fourth iteration
+- The whole suite and the migrations were run against a **local PostgreSQL 16**, not just SQLite. That found a real bug SQLite hides (batch-cancel overflowed a `VARCHAR(64)`), now fixed, and drove input-length hardening. It is still a scratch server: not a managed service, not your data, not your network.
+- Top-10 currencies: six of the ten INR rates are derived (FBIL EUR/INR ÷ ECB EUR/currency). Fixtures for the ECB XML were written from memory of its public format; the live feed is unverified.
+- A yen test exposed and fixed two defects: foreign-currency shortfalls were being "explained" as Indian TDS, and explanations used ₹ for non-INR amounts.

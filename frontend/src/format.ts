@@ -1,5 +1,5 @@
 // All money on the wire is integer minor units (paise/cents). Never use floats for arithmetic; only for display.
-const SYM: Record<string, string> = { INR: "₹", USD: "$", EUR: "€", GBP: "£", SGD: "S$", JPY: "¥", AED: "AED ", CHF: "CHF ", AUD: "A$", CAD: "C$" };
+const SYM: Record<string, string> = { INR: "₹", USD: "$", EUR: "€", GBP: "£", SGD: "S$", JPY: "¥", CNY: "CN¥", HKD: "HK$", AED: "AED ", CHF: "CHF ", AUD: "A$", CAD: "C$" };
 const fmtIN = new Intl.NumberFormat("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtEN = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 export const sym = (ccy: string) => SYM[ccy] ?? `${ccy} `;

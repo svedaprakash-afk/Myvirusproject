@@ -73,8 +73,8 @@ def _residual_exceptions(db: Session, p: MatchProposal, txn: PaymentTransaction,
     if p.short_minor > 0:
         inv = max(p.allocations, key=lambda a: a.invoice.open_minor).invoice if p.allocations else None
         eng.open_exception(ctx, txn, ExceptionType.short_pay, p.short_minor,
-                           f"Customer paid {eng.inr(p.applied_minor)} against {eng.inr(p.applied_minor + p.short_minor)} due; "
-                           f"{eng.inr(p.short_minor)} remains open with no stated reason (not TDS, not within tolerance)",
+                           f"Customer paid {eng.inr(p.applied_minor, txn.currency)} against {eng.inr(p.applied_minor + p.short_minor, txn.currency)} due; "
+                           f"{eng.inr(p.short_minor, txn.currency)} remains open with no stated reason (not TDS, not within tolerance)",
                            cust, [{"action": "request_remittance", "label": "Ask customer why it was short-paid"},
                                   {"action": "write_off", "label": "Write off (needs approval)"},
                                   {"action": "dispute", "label": "Mark invoice as disputed"},
@@ -82,7 +82,7 @@ def _residual_exceptions(db: Session, p: MatchProposal, txn: PaymentTransaction,
     if p.unapplied_minor > 0:
         etype = ExceptionType.overpayment if p.allocations else ExceptionType.on_account
         eng.open_exception(ctx, txn, etype, p.unapplied_minor,
-                           f"{eng.inr(p.unapplied_minor)} received beyond the invoices applied",
+                           f"{eng.inr(p.unapplied_minor, txn.currency)} received beyond the invoices applied",
                            cust, [{"action": "on_account", "label": "Hold on account for future invoices"},
                                   {"action": "refund", "label": "Refund to customer (needs approval)"}], p)
 
@@ -97,6 +97,7 @@ def _learn(db: Session, p: MatchProposal, txn: PaymentTransaction) -> None:
     sender = (doc.sender or "").lower() if doc and doc.auth_result and "dkim=pass" in doc.auth_result else ""   # learn only authenticated senders
     for kind, val in (("name", normalise_name(txn.payer_name)), ("vpa", (txn.payer_vpa or "").lower()), ("account", normalise_account(txn.payer_account)),
                       ("email", sender)):
+        val = val[:200]
         if not val:
             continue
         row = db.execute(select(CustomerIdentifier).where(CustomerIdentifier.entity_id == p.entity_id, CustomerIdentifier.customer_id == cid,
