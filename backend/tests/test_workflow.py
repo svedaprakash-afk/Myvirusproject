@@ -179,9 +179,9 @@ def test_planned_connectors_are_refused_not_faked(w):
     applied_world(w)
     b = posting.build_batch(w.db, w.e, w.users["ar_manager"])
     posting.release_batch(w.db, b, w.users["treasury"])
-    assert REGISTRY["tally_prime"].status == "planned"
+    assert REGISTRY["zoho_books"].status == "planned"
     with pytest.raises(posting.PostingError, match="planned"):
-        posting.export_batch(w.db, b, "tally_prime", w.users["treasury"])
+        posting.export_batch(w.db, b, "zoho_books", w.users["treasury"])
 
 
 def test_canonical_json_connector_roundtrips_balanced_vouchers(w):

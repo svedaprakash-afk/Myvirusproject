@@ -46,6 +46,8 @@ class Settings:
     s3_region: str = field(default_factory=lambda: os.getenv("S3_REGION", ""))
     s3_sse: str = field(default_factory=lambda: os.getenv("S3_SSE", ""))            # AES256 | aws:kms | none (explicit: store encrypts at rest itself)
     s3_kms_key_id: str = field(default_factory=lambda: os.getenv("S3_KMS_KEY_ID", ""))
+    s3_object_lock_mode: str = field(default_factory=lambda: os.getenv("S3_OBJECT_LOCK_MODE", "").upper())   # GOVERNANCE | COMPLIANCE: write-once retention on posting exports
+    s3_retention_days: int = field(default_factory=lambda: int(os.getenv("S3_RETENTION_DAYS", "0") or 0))
     s3_path_style: bool = field(default_factory=lambda: os.getenv("S3_PATH_STYLE", "0") == "1")   # MinIO/Ceph usually need path-style
     # Single sign-on (OpenID Connect, authorization code + PKCE) and SCIM provisioning. Secrets come from the environment only.
     sso_issuer: str = field(default_factory=lambda: os.getenv("SSO_ISSUER", "").rstrip("/"))

@@ -268,3 +268,50 @@ def test_storage_api_status_probe_download_and_roles(client, db, bucket, monkeyp
     assert client.get(f"/api/v1/posting/batches/{b['id']}", headers=tr).json()["stored"] is True
     actions = [r["action"] for r in client.get("/api/v1/audit?action=batch.", headers=login(client, "auditor@meridian.example", DEMO_PASSWORD)).json()["items"]]
     assert "batch.downloaded" in actions and "batch.exported" in actions
+
+
+# ---------------------------------------------------------------------------------------------- Object Lock (write-once exports)
+@pytest.fixture()
+def locked_bucket():
+    with mock_aws():
+        c = boto3.client("s3", region_name="ap-south-1")
+        c.create_bucket(Bucket="cash-bucket", CreateBucketConfiguration={"LocationConstraint": "ap-south-1"}, ObjectLockEnabledForBucket=True)
+        yield c
+
+
+def test_exports_are_written_with_compliance_retention_but_feeds_are_not(locked_bucket, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    c = use(monkeypatch, cfg(s3_object_lock_mode="COMPLIANCE", s3_retention_days=2555))
+    storage.get_store("exports", c).put("1/7/batch.csv", b"data", "text/csv")
+    storage.get_store("feeds", c).put("hdfc/stmt.csv", b"data", "text/csv")
+    h = locked_bucket.head_object(Bucket="cash-bucket", Key="cashapp/exports/1/7/batch.csv")
+    assert h["ObjectLockMode"] == "COMPLIANCE"
+    assert abs((h["ObjectLockRetainUntilDate"] - datetime.now(timezone.utc)).days - 2555) <= 1
+    assert "ObjectLockMode" not in locked_bucket.head_object(Bucket="cash-bucket", Key="cashapp/feeds/hdfc/stmt.csv")
+
+
+def test_a_locked_export_cannot_be_deleted_before_its_retention_ends(locked_bucket, monkeypatch):
+    c = use(monkeypatch, cfg(s3_object_lock_mode="COMPLIANCE", s3_retention_days=30))
+    s = storage.get_store("exports", c)
+    s.put("1/7/batch.csv", b"data", "text/csv")
+    v = locked_bucket.list_object_versions(Bucket="cash-bucket", Prefix="cashapp/exports/1/7/batch.csv")["Versions"][0]["VersionId"]
+    with pytest.raises(Exception, match="AccessDenied|locked|retention"):
+        locked_bucket.delete_object(Bucket="cash-bucket", Key="cashapp/exports/1/7/batch.csv", VersionId=v)
+
+
+def test_the_storage_probe_still_works_and_leaves_no_locked_residue(locked_bucket, monkeypatch):
+    c = use(monkeypatch, cfg(s3_object_lock_mode="COMPLIANCE", s3_retention_days=30))
+    res = storage.probe(storage.get_store("exports", c))
+    assert res["ok"] is True and res["object_lock"] == {"mode": "COMPLIANCE", "retention_days": 30, "enabled": True}
+    assert locked_bucket.list_objects_v2(Bucket="cash-bucket", Prefix="cashapp/exports/_probe").get("KeyCount", 0) == 0
+
+
+def test_object_lock_on_a_bucket_without_it_fails_loudly_and_settings_are_validated(bucket, monkeypatch):
+    c = use(monkeypatch, cfg(s3_object_lock_mode="GOVERNANCE", s3_retention_days=7))
+    with pytest.raises(storage.StorageError, match="Object Lock enabled"):
+        storage.get_store("exports", c).put("1/7/batch.csv", b"data")
+    assert storage.get_store("exports", c).object_lock_status()["enabled"] is False
+    assert any("S3_OBJECT_LOCK_MODE" in e for e in storage.validate_settings(cfg(s3_object_lock_mode="LEGAL")))
+    assert any("S3_RETENTION_DAYS" in e for e in storage.validate_settings(cfg(s3_object_lock_mode="COMPLIANCE", s3_retention_days=0)))
+    assert storage.validate_settings(cfg(s3_object_lock_mode="COMPLIANCE", s3_retention_days=365)) == []

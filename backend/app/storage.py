@@ -13,7 +13,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -143,14 +143,31 @@ class S3Store:
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
             hint = {"NoSuchBucket": "the bucket does not exist", "AccessDenied": "access denied (check the role/credentials and bucket policy)", "InvalidAccessKeyId": "invalid access key",
-                    "SignatureDoesNotMatch": "bad credentials", "404": "not found", "NoSuchKey": "not found"}.get(code, code or "request failed")
+                    "SignatureDoesNotMatch": "bad credentials", "InvalidRequest": "request rejected (if S3_OBJECT_LOCK_MODE is set, the bucket must have been created with Object Lock enabled)", "404": "not found", "NoSuchKey": "not found"}.get(code, code or "request failed")
             raise StorageError(f"object storage {what} failed: {hint}") from e
         except BotoCoreError as e:
             raise StorageError(f"object storage {what} failed: {e}") from e
 
-    def put(self, key: str, data: bytes, content_type: str = "application/octet-stream", sha256: str | None = None) -> None:
+    def _lock(self) -> dict:
+        """Write-once retention for posting exports, so the file an auditor is shown is the file that was sent. Only the 'exports' area is locked:
+        feed landing zones must be able to move files to processed/."""
+        c = self.cfg
+        if not c.s3_object_lock_mode or not self.prefix.rstrip("/").endswith("exports"):
+            return {}
+        return {"ObjectLockMode": c.s3_object_lock_mode, "ObjectLockRetainUntilDate": datetime.now(timezone.utc) + timedelta(days=c.s3_retention_days)}
+
+    def put(self, key: str, data: bytes, content_type: str = "application/octet-stream", sha256: str | None = None, lock: bool = True) -> None:
         self._call("write", self.client.put_object, Bucket=self.cfg.s3_bucket, Key=self._k(key), Body=data, ContentType=content_type,
-                   Metadata={"sha256": sha256 or sha256_hex(data)}, **self._sse())
+                   Metadata={"sha256": sha256 or sha256_hex(data)}, **self._sse(), **(self._lock() if lock else {}))
+
+    def object_lock_status(self) -> dict:
+        """Is Object Lock enabled on the bucket (it can only be turned on at bucket creation, together with versioning)?"""
+        try:
+            r = self.client.get_object_lock_configuration(Bucket=self.cfg.s3_bucket)
+            return {"enabled": r["ObjectLockConfiguration"].get("ObjectLockEnabled") == "Enabled"}
+        except Exception as e:
+            code = getattr(e, "response", {}).get("Error", {}).get("Code", "")
+            return {"enabled": False, "detail": "Object Lock is not enabled on this bucket" if code == "ObjectLockConfigurationNotFoundError" else f"could not read the bucket's Object Lock setting ({code or type(e).__name__})"}
 
     def get(self, key: str, verify_sha256: str | None = None) -> bytes:
         r = self._call("read", self.client.get_object, Bucket=self.cfg.s3_bucket, Key=self._k(key))
@@ -190,7 +207,9 @@ class S3Store:
 
     def describe(self) -> dict:
         return {"backend": "s3", "bucket": self.cfg.s3_bucket, "prefix": self.prefix, "region": self.cfg.s3_region or None, "endpoint": self.cfg.s3_endpoint_url or None,
-                "encryption": self.cfg.s3_sse or "none declared"}
+                "encryption": self.cfg.s3_sse or "none declared",
+                **({"object_lock": {"mode": self.cfg.s3_object_lock_mode, "retention_days": self.cfg.s3_retention_days, **self.object_lock_status()}}
+                   if self.cfg.s3_object_lock_mode and self.prefix.rstrip("/").endswith("exports") else {})}
 
 
 def s3_host(cfg) -> str:
@@ -210,6 +229,10 @@ def validate_settings(cfg) -> list[str]:
         errs.append("S3_BUCKET is required when STORAGE_BACKEND=s3")
     if cfg.s3_sse not in ("", "AES256", "aws:kms", "none"):
         errs.append("S3_SSE must be AES256, aws:kms or none")
+    if cfg.s3_object_lock_mode not in ("", "GOVERNANCE", "COMPLIANCE"):
+        errs.append("S3_OBJECT_LOCK_MODE must be GOVERNANCE or COMPLIANCE")
+    elif cfg.s3_object_lock_mode and not 1 <= cfg.s3_retention_days <= 3650:
+        errs.append("S3_RETENTION_DAYS must be between 1 and 3650 when Object Lock is used (COMPLIANCE retention cannot be shortened or removed by anyone)")
     if cfg.s3_sse == "aws:kms" and not cfg.s3_kms_key_id and cfg.residency_strict:
         errs.append("S3_KMS_KEY_ID is required with aws:kms in strict mode (use a key created in the Indian region)")
     if cfg.residency_strict:
@@ -243,7 +266,7 @@ def probe(store) -> dict:
     key = f"_probe/{uuid.uuid4().hex}.txt"
     payload = f"cashapp probe {datetime.now(timezone.utc).isoformat()}".encode()
     t0 = time.perf_counter()
-    store.put(key, payload, "text/plain", sha256_hex(payload))
+    store.put(key, payload, "text/plain", sha256_hex(payload), lock=False) if store.backend == "s3" else store.put(key, payload, "text/plain", sha256_hex(payload))
     ok = store.get(key, sha256_hex(payload)) == payload
     store.delete(key)
     return {"ok": ok, "ms": round((time.perf_counter() - t0) * 1000), **store.describe()}
