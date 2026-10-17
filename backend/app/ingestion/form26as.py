@@ -182,7 +182,7 @@ def resolve_customer(db: Session, entity_id: int, tan: str, name: str, customers
     if scored and scored[0][0] >= 92 and (len(scored) == 1 or scored[1][0] <= scored[0][0] - 8):
         c = scored[0][1]
         c.tan = tan
-        return c, f"{name} -> {c.name} ({scored[0][0]:.0f}% name match): check the TAN"
+        return c, (f"{name} -> {c.name} ({scored[0][0]:.0f}% name match): check the TAN" if scored[0][0] < 99 else None)
     return None, None
 
 

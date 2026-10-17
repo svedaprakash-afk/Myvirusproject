@@ -5,9 +5,18 @@ import { useAction, useAsync } from "../hooks";
 import { date, money, pct, toMinor } from "../format";
 import { Chip, ErrorBox, Field, Loading, PageHead, Tabs } from "../components/ui";
 
+const DEFAULT_PROV = [{ from_days: 0, pct_bp: 50 }, { from_days: 31, pct_bp: 200 }, { from_days: 61, pct_bp: 500 }, { from_days: 91, pct_bp: 1500 }, { from_days: 181, pct_bp: 4000 }, { from_days: 366, pct_bp: 10000 }];
+
 export default function Settings() {
   const [tab, setTab] = useState<"controls" | "ai">("controls");
   return (<><PageHead title="Settings & AI" sub="Matching thresholds, control switches and the scoring model lifecycle." /><Tabs value={tab} onChange={setTab} tabs={[["controls", "Controls"], ["ai", "AI model lifecycle"]]} />{tab === "controls" ? <Controls /> : <Models />}</>);
+}
+
+function provValid(rows: { d: string; p: string }[]): boolean {
+  const r = rows.map((x) => ({ d: parseInt(x.d, 10), p: parseFloat(x.p) }));
+  if (r.some((x) => Number.isNaN(x.d) || Number.isNaN(x.p) || x.d < 0 || x.p < 0 || x.p > 100)) return false;
+  const s = [...r].sort((a, b) => a.d - b.d);
+  return s[0].d === 0 && new Set(s.map((x) => x.d)).size === s.length && s.every((x, i) => i === 0 || x.p >= s[i - 1].p);
 }
 
 function Controls() {
@@ -15,7 +24,7 @@ function Controls() {
   const cfg = useAsync(() => api.get<any>(`/entities/${entity.id}/config`), [entity.id]);
   const [f, setF] = useState<any>(null); const { run, busy } = useAction();
   const cKey = JSON.stringify(cfg.data);
-  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, trust: { enabled: false, graduate_after: 5, ...(cfg.data.config.trust_graduation ?? {}) }, tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cKey]); // eslint-disable-line
+  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, trust: { enabled: false, graduate_after: 5, ...(cfg.data.config.trust_graduation ?? {}) }, prov: (cfg.data.config.provision_matrix ?? DEFAULT_PROV).map((r: any) => ({ d: String(r.from_days), p: String(r.pct_bp / 100) })), dispBp: String(cfg.data.config.provision_disputed_bp ?? 5000), thr194: String((cfg.data.config.tds_194q_threshold_minor ?? 500000000) / 100), einv: !!cfg.data.config.e_invoice_required, gstFreq: cfg.data.config.gstr1_frequency ?? "monthly", tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cKey]); // eslint-disable-line
   if (cfg.error) return <ErrorBox msg={cfg.error} />;
   if (!f) return <Loading />;
   const editable = can("admin", "finance_head");
@@ -42,6 +51,21 @@ function Controls() {
           <div className="faint" style={{ fontSize: 12, marginLeft: 22 }}>Customers start in a learning phase where every match waits for a person. After this many confirmed matches in a row with no correction they graduate; a rejection, override or reversed auto-match resets them. Managers can pin a customer on their page.</div>
           {f.trust.enabled && <div style={{ marginLeft: 22, marginTop: 6 }}><Field label="Confirmed matches in a row before a customer graduates"><input type="number" min={1} max={50} value={f.trust.graduate_after} disabled={!editable} onChange={(e) => set("trust", { ...f.trust, graduate_after: Number(e.target.value) })} style={{ width: 90 }} /></Field></div>}</div>
         <button className="btn primary" disabled={!editable || busy || invalid || !(f.trust.graduate_after >= 1 && f.trust.graduate_after <= 50)} onClick={() => run(() => api.put(`/entities/${entity.id}/config`, { trust_graduation: { enabled: !!f.trust.enabled, graduate_after: f.trust.graduate_after }, auto_approve_threshold: f.auto_approve_threshold, review_threshold: f.review_threshold, auto_approve_enabled: f.auto_approve_enabled, auto_approve_amount_only: f.auto_approve_amount_only, auto_approve_cross_currency: f.auto_approve_cross_currency, straight_through_release: f.straight_through_release, sla_hours: f.sla_hours, max_subset_size: f.max_subset_size, default_tolerance_minor: tol, auto_approve_max_minor: mx }), "Saved and audited").then(cfg.reload)}>Save changes</button>
+      </div>
+      <div className="card"><h2>Tax &amp; finance policy</h2>
+        <Field label="Expected-credit-loss provision matrix" hint="Share of each overdue bucket you expect not to collect. The defaults are illustrative only: set them from your own loss history and your auditor's view.">
+          {f.prov.map((r: any, i: number) => (
+            <div key={i} className="row" style={{ marginBottom: 4 }}>
+              <input aria-label="Days overdue from" value={r.d} disabled={!editable || i === 0} onChange={(e) => set("prov", f.prov.map((x: any, k: number) => (k === i ? { ...x, d: e.target.value } : x)))} inputMode="numeric" style={{ width: 80 }} /><span className="muted">days overdue →</span>
+              <input aria-label="Provision percent" value={r.p} disabled={!editable} onChange={(e) => set("prov", f.prov.map((x: any, k: number) => (k === i ? { ...x, p: e.target.value } : x)))} inputMode="decimal" style={{ width: 80 }} /><span className="muted">%</span>
+              {editable && i > 0 && <button className="btn sm" onClick={() => set("prov", f.prov.filter((_: any, k: number) => k !== i))}>Remove</button>}</div>))}
+          {editable && f.prov.length < 12 && <button className="btn sm" onClick={() => set("prov", [...f.prov, { d: "", p: "" }])}>Add band</button>}
+        </Field>
+        <Field label="Minimum provision on disputed invoices (%)"><input value={String(Number(f.dispBp) / 100)} disabled={!editable} onChange={(e) => set("dispBp", String(Math.round(parseFloat(e.target.value || "0") * 100)))} inputMode="decimal" style={{ width: 90 }} /></Field>
+        <Field label="Section 194Q threshold (₹)" hint="Purchases from you in a financial year above which a buyer deducts 0.1%. Statutory value: confirm with your tax team."><input value={f.thr194} disabled={!editable} onChange={(e) => set("thr194", e.target.value)} inputMode="decimal" /></Field>
+        <div className="field"><label className="row" style={{ textTransform: "none", fontSize: 13.5, color: "var(--text)" }}><input type="checkbox" style={{ width: "auto" }} checked={f.einv} disabled={!editable} onChange={(e) => set("einv", e.target.checked)} />E-invoicing applies to this entity</label><div className="faint" style={{ fontSize: 12, marginLeft: 22 }}>Lets the GST checks flag invoices to registered customers that carry no IRN.</div></div>
+        <Field label="GSTR-1 filing"><select value={f.gstFreq} disabled={!editable} onChange={(e) => set("gstFreq", e.target.value)} style={{ width: "auto" }}><option value="monthly">Monthly</option><option value="quarterly">Quarterly (QRMP)</option></select></Field>
+        <button className="btn primary" disabled={!editable || busy || !provValid(f.prov) || Number.isNaN(toMinor(f.thr194))} onClick={() => run(() => api.put(`/entities/${entity.id}/config`, { provision_matrix: f.prov.map((r: any) => ({ from_days: parseInt(r.d, 10), pct_bp: Math.round(parseFloat(r.p) * 100) })), provision_disputed_bp: Number(f.dispBp), tds_194q_threshold_minor: toMinor(f.thr194), e_invoice_required: f.einv, gstr1_frequency: f.gstFreq }), "Saved and audited").then(cfg.reload)}>Save policy</button>
       </div>
       <div className="card"><h2>Guardrails (always on)</h2><p className="muted">These are plain code, independent of any model, and cannot be tuned away:</p>
         <ul style={{ paddingLeft: 18, margin: 0 }}>{["Payer must be identified with high certainty and unambiguously", "Payer name must resemble the customer (third-party payers need a human)", "Only one plausible invoice combination", "No short-pay, overpayment or unapplied residual", "No disputed invoice; credit notes only when referenced", "TDS must be at the customer's usual rate and base", "Invoice not already proposed for another receipt", "Currency must match; possible duplicates are stopped"].map((g) => <li key={g}>{g}</li>)}</ul></div>

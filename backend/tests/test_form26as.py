@@ -77,7 +77,7 @@ def test_import_maps_deductors_by_name_records_the_tan_and_is_idempotent(w):
     acme, bharat, *_ = world(w)
     res = form26as.import_entries(w.db, w.e.id, form26as.parse_txt(TXT), "26AS", "t", None)
     assert res["inserted"] == 4
-    assert acme.tan == "MUMA12345B" and bharat.tan == "DELB98765C" and any("check the TAN" in n for n in res["mapped_notes"])
+    assert acme.tan == "MUMA12345B" and bharat.tan == "DELB98765C" and res["mapped_notes"] == [], "exact name matches need no warning"
     assert res["unmapped_deductors"] == [{"tan": "KOLU55555U", "name": "UNKNOWN BUYER CO"}]
     again = form26as.import_entries(w.db, w.e.id, form26as.parse_txt(TXT), "26AS", "t", None)
     assert again["inserted"] == 0 and again["unchanged"] == res["inserted"]
