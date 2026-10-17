@@ -25,7 +25,7 @@ def tables(e):
 
 
 def test_fresh_database_upgrades_to_exactly_the_models(eng):
-    assert migrate.upgrade(eng) == migrate.head() == "0008"
+    assert migrate.upgrade(eng) == migrate.head() == "0009"
     assert tables(eng) == set(Base.metadata.tables) | {"alembic_version"}
     assert migrate.drift(eng) == [], "CI GUARD: a model changed without a migration. Run `python -m app.cli create-migration \"msg\"` and review it."
 
@@ -84,12 +84,13 @@ def test_legacy_database_from_an_older_release_is_stamped_at_its_own_revision_th
     assert "customer_trust" in tables(eng)
 
 
-HEAD = "0008"
+HEAD = "0009"
 
 
 def _strip_0003(eng):
-    """Make a create_all() database look like it predates 0003 (drop everything 0003 to 0008 added)."""
+    """Make a create_all() database look like it predates 0003 (drop everything 0003 to 0009 added)."""
     with eng.begin() as c:
+        c.execute(text("alter table users drop column password_changed_at"))
         c.execute(text("drop table notifications"))
         c.execute(text("drop table period_locks"))
         c.execute(text("drop table gst_documents"))

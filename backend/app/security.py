@@ -5,7 +5,7 @@ import base64
 import hashlib
 import hmac
 import os
-from datetime import timedelta
+from datetime import timedelta, timezone
 from typing import Callable
 
 import jwt
@@ -36,7 +36,8 @@ def verify_password(pw: str, stored: str) -> bool:
 
 
 def make_token(user: User) -> str:
-    payload = {"sub": str(user.id), "role": user.role.value, "exp": utcnow() + timedelta(minutes=settings.jwt_ttl_minutes)}
+    now = utcnow()
+    payload = {"sub": str(user.id), "role": user.role.value, "iat": int(now.replace(tzinfo=timezone.utc).timestamp()), "exp": now + timedelta(minutes=settings.jwt_ttl_minutes)}
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 
 
@@ -73,6 +74,8 @@ def current_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer), d
     user = db.get(User, int(data["sub"]))
     if not user or not user.active:
         raise HTTPException(401, "User disabled")
+    if user.password_changed_at and data.get("iat", 0) < int(user.password_changed_at.replace(tzinfo=timezone.utc).timestamp()):
+        raise HTTPException(401, "Your password was changed: sign in again")
     return user
 
 

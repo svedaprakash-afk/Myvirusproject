@@ -105,6 +105,7 @@ class User(Base):
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     entity_ids: Mapped[list] = mapped_column(JSON, default=list)  # empty => all entities
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime)   # tokens issued before this moment stop working
 
 
 # ---------------------------------------------------------------- org structure

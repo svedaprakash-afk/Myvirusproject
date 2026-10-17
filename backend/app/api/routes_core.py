@@ -8,14 +8,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit, config, sso
+from .. import audit, config, passwords, sso
 from ..db import get_db
 from ..ingestion import service as ing
 from ..ingestion.statements import StatementError
 from ..models import (BankAccount, Customer, CustomerIdentifier, CustomerProfile, CustomerTrust, DEFAULT_ENTITY_CONFIG, Invoice, LegalEntity, Role, ToleranceRule, User)
 from ..matching import trust
 from ..posting.connectors import REGISTRY
-from ..security import can_see_pii, current_user, make_token, require, verify_password
+from ..models import utcnow
+from ..security import can_see_pii, current_user, hash_password, make_token, require, verify_password
 from . import serializers as S
 from .deps import entity_for, get_or_404, guard, page
 
@@ -29,9 +30,15 @@ class LoginIn(BaseModel):
 
 @router.post("/auth/login")
 def login(body: LoginIn, db: Session = Depends(get_db)):
-    u = db.execute(select(User).where(User.email == body.email.lower().strip())).scalar_one_or_none()
+    email = body.email.lower().strip()[:100]
+    wait = passwords.locked_for(db, email)
+    if wait:
+        audit.log(db, email, "auth.locked", "User", "-", None, {"retry_after_s": wait})
+        db.commit()
+        raise HTTPException(429, f"Too many failed attempts. Try again in {max(1, wait // 60)} minute(s).", headers={"Retry-After": str(wait)})
+    u = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
     if not u or not u.active or not verify_password(body.password, u.password_hash):
-        audit.log(db, body.email[:100], "auth.failed", "User", u.id if u else "-", None, {})
+        audit.log(db, email, "auth.failed", "User", u.id if u else "-", None, {})
         db.commit()
         raise HTTPException(401, "Invalid credentials")
     if config.settings.sso_enforce and sso.enabled() and u.role != Role.admin:
@@ -40,6 +47,28 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(403, "Password sign-in is turned off for your account. Use single sign-on.")
     audit.log(db, u.name, "auth.login", "User", u.id, None, {}, u.id)
     return {"token": make_token(u), "user": {"id": u.id, "name": u.name, "email": u.email, "role": u.role.value}}
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/auth/change-password")
+def change_password(body: PasswordIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not verify_password(body.current_password, user.password_hash):
+        audit.log(db, user.email, "auth.failed", "User", user.id, None, {"via": "change-password"}, user.id)
+        db.commit()
+        raise HTTPException(403, "Your current password is not correct")
+    errs = passwords.check(body.new_password, user.email, user.name)
+    if body.new_password == body.current_password:
+        errs.append("must be different from the current one")
+    if errs:
+        raise HTTPException(422, "The new password " + "; it ".join(errs))
+    user.password_hash, user.password_changed_at = hash_password(body.new_password), utcnow()
+    audit.log(db, user.name, "auth.password_changed", "User", user.id, None, {}, user.id)
+    db.flush()
+    return {"token": make_token(user), "note": "Other sessions were signed out"}
 
 
 @router.get("/auth/me")

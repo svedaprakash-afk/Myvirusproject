@@ -1,4 +1,4 @@
-"""Operational CLI.  migrate | status | create-migration MSG | downgrade REV --yes | create-user | seed-demo | fetch-fx | worker"""
+"""Operational CLI.  migrate | status | doctor | create-migration MSG | downgrade REV --yes | create-user | reset-password | seed-demo | fetch-fx | worker"""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,10 @@ def main(argv=None) -> int:
     dg.add_argument("revision"); dg.add_argument("--yes", action="store_true")
     a = sub.add_parser("create-user")
     a.add_argument("email"); a.add_argument("--name", required=True); a.add_argument("--role", choices=[r.value for r in Role], default="admin")
+    a.add_argument("--password-env", help="read the password from this environment variable instead of prompting (for scripted installs)")
+    r = sub.add_parser("reset-password", help="set a new password for a user (signs out their existing sessions)")
+    r.add_argument("email"); r.add_argument("--password-env")
+    sub.add_parser("doctor", help="production readiness checks (non-zero exit if any fail)")
     sub.add_parser("seed-demo")
     sub.add_parser("fetch-fx", help="fetch the FBIL/RBI reference rates once (for cron)")
     sub.add_parser("worker", help="run scheduled jobs: FX fetch, inbox polling, bank-feed sync, matching")
@@ -30,6 +34,12 @@ def main(argv=None) -> int:
     assert_safe_for_production()
     from . import migrate
 
+    if args.cmd == "doctor":
+        from . import doctor
+
+        checks = doctor.run()
+        print(doctor.render(checks))
+        return doctor.exit_code(checks)
     if args.cmd in ("migrate", "init-db"):
         try:
             print("schema at revision", migrate.upgrade(engine))
@@ -70,11 +80,30 @@ def main(argv=None) -> int:
             from . import fxfeed
 
             print(fxfeed.run_feed(db, "cli"))
-        if args.cmd == "create-user":
-            pw = getpass.getpass("Password (min 12 chars): ")
-            if len(pw) < 12:
-                print("password too short", file=sys.stderr); return 1
-            db.add(User(email=args.email.lower(), name=args.name, role=Role(args.role), password_hash=hash_password(pw)))
+        if args.cmd in ("create-user", "reset-password"):
+            import os
+
+            from . import passwords
+            from sqlalchemy import select
+
+            email = args.email.lower().strip()
+            pw = os.environ.get(args.password_env or "") if args.password_env else getpass.getpass("Password (min 12 chars): ")
+            if args.password_env and not pw:
+                print(f"environment variable {args.password_env} is not set", file=sys.stderr); return 1
+            existing = db.execute(select(User).where(User.email == email)).scalar_one_or_none()
+            errs = passwords.check(pw or "", email, getattr(args, "name", "") or (existing.name if existing else ""))
+            if errs:
+                print("password rejected: it " + "; it ".join(errs), file=sys.stderr); return 1
+            if args.cmd == "create-user":
+                if existing:
+                    print(f"{email} already exists (use reset-password)", file=sys.stderr); return 1
+                db.add(User(email=email, name=args.name, role=Role(args.role), password_hash=hash_password(pw)))
+            else:
+                if not existing:
+                    print(f"no such user {email}", file=sys.stderr); return 1
+                from .models import utcnow
+
+                existing.password_hash, existing.password_changed_at = hash_password(pw), utcnow()
         elif args.cmd == "seed-demo":
             if not settings.allow_demo:
                 print("ALLOW_DEMO=0", file=sys.stderr); return 1

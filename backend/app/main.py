@@ -26,7 +26,9 @@ async def lifespan(app: FastAPI):
     yield
 
 
+_prod = settings.env == "prod"
 app = FastAPI(title="Cash Application & Receivables Exceptions", version="0.1.0", lifespan=lifespan,
+              docs_url=None if _prod else "/docs", redoc_url=None if _prod else "/redoc", openapi_url=None if _prod else "/openapi.json",   # no public map of the API in production
               description="AI-assisted cash application for Indian mid-market corporates. All amounts are integer minor units (paise).")
 app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["*"], allow_headers=["*"], allow_credentials=False)
 
