@@ -173,4 +173,8 @@ def reverse_proposal(db: Session, p: MatchProposal, actor: str, actor_id: int | 
     # a human reversing an applied match is the strongest negative signal we get
     db.add(MatchFeedback(entity_id=p.entity_id, proposal_id=p.id, label=0, features=p.features, user_id=actor_id))
     trust.record_correction(db, p.customer_id, p.entity_id, "applied match was reversed", actor_id, was_auto=was_auto)
+    if was_auto:
+        from .. import notify
+
+        notify.emit(db, p.entity_id, "auto.reversed", f"A straight-through match for receipt #{txn.id} was reversed", f"Reason given: {reason}. Review similar matches before trusting auto-posting.", f"autorev:{p.id}")
     audit.log(db, actor, "proposal.reversed", "MatchProposal", p.id, p.entity_id, {"txn": txn.id, "reason": reason, "was_auto": was_auto}, actor_id)

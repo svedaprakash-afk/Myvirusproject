@@ -368,3 +368,54 @@ def storage_test(user: User = Depends(require("configure", "fx"))):
     except storage.StorageError as e:
         raise HTTPException(409, str(e))
     return out
+
+
+# ------------------------------------------------------------------------------------------------ notifications
+@router.get("/entities/{eid}/notifications")
+def get_notifications(eid: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from .. import notify
+
+    e = entity_for(db, user, eid)
+    return {"config": (e.config or {}).get("notifications") or {}, "events": notify.EVENTS, "channels": list(notify.CHANNELS)}
+
+
+@router.put("/entities/{eid}/notifications")
+def set_notifications(eid: int, body: dict, user: User = Depends(require("configure")), db: Session = Depends(get_db)):
+    from .. import notify
+
+    e = entity_for(db, user, eid)
+    errs = notify.validate(body)
+    if errs:
+        raise HTTPException(422, "; ".join(errs))
+    e.config = {**(e.config or {}), "notifications": body}
+    audit.log(db, user.name, "notifications.changed", "LegalEntity", e.id, e.id, {"channels": sorted(body)}, user.id)
+    return {"ok": True}
+
+
+@router.post("/entities/{eid}/notifications/test")
+def test_notification(eid: int, channel: str, user: User = Depends(require("configure")), db: Session = Depends(get_db)):
+    from .. import notify
+    from ..models import Notification, utcnow
+
+    e = entity_for(db, user, eid)
+    if channel not in ((e.config or {}).get("notifications") or {}):
+        raise HTTPException(422, f"{channel} is not configured")
+    n = Notification(entity_id=e.id, event="test", channel=channel, subject="Test alert", body=f"Sent by {user.name}. If you can read this, alerts will reach you.",
+                     dedupe_key=f"test:{utcnow():%Y%m%d%H%M%S%f}")
+    db.add(n)
+    db.flush()
+    notify.dispatch(db, only_ids=[n.id])
+    return {"status": n.status, "error": n.error}
+
+
+@router.get("/notifications")
+def list_notifications(entity_id: int, status: str = "", limit: int = 100, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from ..models import Notification
+
+    entity_for(db, user, entity_id)
+    q = select(Notification).where(Notification.entity_id == entity_id)
+    if status:
+        q = q.where(Notification.status == status)
+    rows = db.execute(q.order_by(Notification.id.desc()).limit(min(limit, 500))).scalars().all()
+    return [{"id": n.id, "event": n.event, "channel": n.channel, "subject": n.subject, "status": n.status, "attempts": n.attempts, "error": n.error,
+             "created_at": n.created_at.isoformat(), "sent_at": n.sent_at.isoformat() if n.sent_at else None} for n in rows]

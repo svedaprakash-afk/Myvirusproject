@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, notify
 from ..config import settings
 from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PeriodLock, PostingBatch, PostingLine,
                       ProposalStatus, MatchProposal, TxnStatus, User, utcnow, DEFAULT_LEDGERS, DEFAULT_ENTITY_CONFIG)
@@ -275,6 +275,7 @@ def acknowledge(db: Session, batch: PostingBatch, erp_docs: dict[str, str], user
 def fail_batch(db: Session, batch: PostingBatch, error: str, user: User) -> None:
     batch.status, batch.error = BatchStatus.failed, error[:2000]
     audit.log(db, user.name, "batch.failed", "PostingBatch", batch.id, batch.entity_id, {"error": error[:500]}, user.id)
+    notify.emit(db, batch.entity_id, "batch.failed", f"Posting batch #{batch.id} failed", f"Marked failed by {user.name}: {error[:500]}", f"batchfail:{batch.id}:{utcnow():%H%M%S}")
 
 
 def cancel_batch(db: Session, batch: PostingBatch, user: User) -> None:

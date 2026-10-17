@@ -243,6 +243,10 @@ def set_lock(body: LockIn, user: User = Depends(require("configure")), db: Sessi
         lk.locked_through, lk.locked_by, lk.locked_at, lk.note = new, user.id, utcnow(), body.note
     else:
         db.add(PeriodLock(entity_id=body.entity_id, locked_through=new, locked_by=user.id, note=body.note))
+    if reopening:
+        from .. import notify
+
+        notify.emit(db, body.entity_id, "period.reopened", "A closed accounting period was re-opened", f"By {user.name}: {body.note}", f"reopen:{body.entity_id}:{utcnow():%Y%m%d%H%M%S}")
     audit.log(db, user.name, "period.reopened" if reopening else "period.locked", "LegalEntity", body.entity_id, body.entity_id,
               {"before": before, "after": new.isoformat() if new else None, "note": body.note}, user.id)
     return {"locked_through": new.isoformat() if new else None}

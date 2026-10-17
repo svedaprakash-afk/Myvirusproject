@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from . import fxfeed
+from . import fxfeed, notify
 from .ingestion import feeds, mailbox
 from .matching import engine
 from .models import BankAccount, JobRun, LegalEntity, utcnow
@@ -41,7 +41,8 @@ def _finish(db: Session, row: JobRun, ok: bool, detail: dict) -> None:
     db.commit()
 
 
-def run_once(Session_: sessionmaker, now: datetime | None = None, fx_transport=None, imap_factory=None, feed_transport=None) -> list[dict]:
+def run_once(Session_: sessionmaker, now: datetime | None = None, fx_transport=None, imap_factory=None, feed_transport=None, smtp_factory=None,
+             notify_http=None) -> list[dict]:
     """One scheduler tick. `now` is UTC (injectable for tests). Returns what ran."""
     now = now or utcnow()
     ist = now + IST
@@ -97,6 +98,17 @@ def run_once(Session_: sessionmaker, now: datetime | None = None, fx_transport=N
                             db.rollback()
                             _finish(db, row, False, {"error": str(ex)[:500]})
                         ran.append({"job": f"bank_sync:{b.id}", "status": row.status})
+            if (e.config or {}).get("notifications"):
+                row = _claim(db, f"notify_scan:{e.id}", f"{int(now.timestamp()) // 900}")
+                if row:
+                    try:
+                        res = notify.scan(db, e, now)
+                        db.commit()
+                        _finish(db, row, True, res)
+                    except Exception as ex:
+                        db.rollback()
+                        _finish(db, row, False, {"error": str(ex)[:500]})
+                    ran.append({"job": f"notify_scan:{e.id}", "status": row.status})
             if new_work:
                 row = _claim(db, f"match:{e.id}", f"{int(now.timestamp())}")
                 if row:
@@ -108,6 +120,18 @@ def run_once(Session_: sessionmaker, now: datetime | None = None, fx_transport=N
                         db.rollback()
                         _finish(db, row, False, {"error": str(ex)[:500]})
                     ran.append({"job": f"match:{e.id}", "status": row.status})
+        row = _claim(db, "notify_send", f"{int(now.timestamp()) // 60}")
+        if row:
+            res: dict = {}
+            try:
+                res = notify.dispatch(db, now, smtp_factory=smtp_factory, http=notify_http)
+                db.commit()
+                _finish(db, row, not res["failed"], res)
+            except Exception as ex:
+                db.rollback()
+                _finish(db, row, False, {"error": str(ex)[:500]})
+            if res.get("sent") or res.get("failed") or res.get("retrying"):
+                ran.append({"job": "notify_send", "status": row.status})
     finally:
         db.close()
     return ran

@@ -656,6 +656,25 @@ class PeriodLock(Base):
     note: Mapped[str] = mapped_column(String(300), default="")
 
 
+class Notification(Base):
+    """Outbox: an alert queued for a channel. Rows are sent by the worker with retry and back-off, so a down mail server never loses an alert or blocks a user."""
+    __tablename__ = "notifications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    event: Mapped[str] = mapped_column(String(40))
+    channel: Mapped[str] = mapped_column(String(10))             # email | slack | teams
+    subject: Mapped[str] = mapped_column(String(200))
+    body: Mapped[str] = mapped_column(Text)
+    dedupe_key: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(8), default="pending", index=True)   # pending | sent | failed
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    __table_args__ = (UniqueConstraint("entity_id", "channel", "dedupe_key"),)
+
+
 # ---------------------------------------------------------------- posting
 class PostingBatch(Base):
     __tablename__ = "posting_batches"

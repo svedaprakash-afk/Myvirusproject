@@ -6,7 +6,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import audit
+from . import audit, notify
 from .indian import normalise_name
 from .matching import actions, advances, engine
 from .matching.context import build_ctx
@@ -47,6 +47,8 @@ def request_approval(db: Session, user: User, entity_id: int, kind: ApprovalKind
     db.flush()
     audit.log(db, user.name, "approval.requested", "ApprovalRequest", req.id, entity_id,
               {"kind": kind.value, "amount_minor": amount, "required_role": req.required_role.value, "reason": reason}, user.id)
+    notify.emit(db, entity_id, "approval.requested", f"Approval needed: {kind.value.replace('_', ' ')} of {amount / 100:,.2f} (needs {req.required_role.value.replace('_', ' ')})",
+                f"Requested by {user.name}.\nReason: {reason.strip()}", f"approval:{req.id}")
     return req
 
 
