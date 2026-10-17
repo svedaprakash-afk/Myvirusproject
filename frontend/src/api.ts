@@ -56,7 +56,7 @@ export async function download(path: string, filename: string, body?: unknown) {
 // ---------- types (mirrors backend serializers) ----------
 export type Role = "admin" | "ar_analyst" | "ar_manager" | "treasury" | "finance_head" | "auditor";
 export interface User { id: number; name: string; email: string; role: Role }
-export interface Entity { id: number; name: string; gstin: string | null; pan: string | null }
+export interface Entity { id: number; name: string; gstin: string | null; pan: string | null; base_currency: string }
 export interface CustomerBrief { id: number; code: string; name: string; tier: string }
 export interface Txn {
   id: number; entity_id: number; bank: string; txn_date: string; amount_minor: number; fee_minor: number; receivable_minor: number; currency: string;

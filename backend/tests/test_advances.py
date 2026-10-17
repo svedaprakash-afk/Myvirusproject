@@ -11,7 +11,7 @@ from app.posting import service as posting
 from tests.conftest import login
 
 
-def overpaid(w, extra=10_000_00, number="INV/26-27/1201"):
+def overpaid(w, extra=10_000_00, number="INV/26-27/1201", hold=False):
     c = w.cust.get("C1") or w.customer("C1", "Acme Industries Pvt Ltd")
     inv = w.invoice(c, number, 100_000_00)
     t = w.credit(inv.total_minor + extra, f"NEFT-HDFCN26274000999-ACME INDUSTRIES PVT LTD-{number}")
@@ -19,6 +19,9 @@ def overpaid(w, extra=10_000_00, number="INV/26-27/1201"):
     p = w.db.execute(select(MatchProposal).where(MatchProposal.txn_id == t.id)).scalar_one()
     if p.status == ProposalStatus.pending_review:
         actions.apply_proposal(w.db, None, p, "a", w.users["ar_analyst"].id)
+    if hold:
+        ex = w.db.execute(select(ExceptionCase).where(ExceptionCase.type == ExceptionType.overpayment, ExceptionCase.txn_id == t.id)).scalar_one()
+        workflow.resolve_exception(w.db, w.users["ar_analyst"], ex, "on_account", {})
     return c, inv, t, p
 
 
@@ -43,7 +46,7 @@ def test_balance_is_created_when_the_overpayment_is_applied_and_voided_on_revers
 
 
 def test_advance_is_proposed_for_a_later_invoice_by_run_matching(w):
-    c, inv, t, p = overpaid(w, extra=30_000_00)
+    c, inv, t, p = overpaid(w, extra=30_000_00, hold=True)
     new = w.invoice(c, "INV/26-27/1300", 20_000_00, days_ago=1)       # raised after the advance arrived
     w.run()   # run_matching proposes advance applications as a last step
     app = w.db.execute(select(AdvanceApplication)).scalar_one()
@@ -52,7 +55,7 @@ def test_advance_is_proposed_for_a_later_invoice_by_run_matching(w):
 
 
 def test_application_clears_the_invoice_reduces_the_balance_and_posts_dr_unapplied_cr_ar(w):
-    c, inv, t, p = overpaid(w, extra=30_000_00)
+    c, inv, t, p = overpaid(w, extra=30_000_00, hold=True)
     new = w.invoice(c, "INV/26-27/1300", 20_000_00, days_ago=1)
     w.db.flush()
     advances.propose_applications(w.db, w.e)
@@ -91,7 +94,7 @@ def test_po_reference_in_the_payment_text_picks_the_right_invoice_over_the_oldes
 
 
 def test_disputed_invoices_and_foreign_balances_are_never_proposed(w):
-    c, inv, t, p = overpaid(w, extra=30_000_00)
+    c, inv, t, p = overpaid(w, extra=30_000_00, hold=True)
     d = w.invoice(c, "INV/26-27/1400", 10_000_00, days_ago=1)
     d.disputed = True
     w.db.flush()
@@ -104,7 +107,7 @@ def test_disputed_invoices_and_foreign_balances_are_never_proposed(w):
 
 
 def test_a_balance_that_is_partly_applied_blocks_reversal_of_its_receipt(w):
-    c, inv, t, p = overpaid(w, extra=30_000_00)
+    c, inv, t, p = overpaid(w, extra=30_000_00, hold=True)
     w.invoice(c, "INV/26-27/1300", 20_000_00, days_ago=1)
     advances.propose_applications(w.db, w.e)
     advances.accept(w.db, w.db.execute(select(AdvanceApplication)).scalar_one(), w.users["ar_analyst"])
@@ -153,7 +156,7 @@ def test_fifo_guess_skips_disputed_invoices_and_says_so(w):
 
 
 def test_api_lists_balances_and_enforces_roles(client, w):
-    c, inv, t, p = overpaid(w, extra=30_000_00)
+    c, inv, t, p = overpaid(w, extra=30_000_00, hold=True)
     w.invoice(c, "INV/26-27/1300", 20_000_00, days_ago=1)
     an = login(client, "ar_analyst@t.example", "pw-ar_analyst")
     au = login(client, "auditor@t.example", "pw-auditor")
@@ -165,3 +168,12 @@ def test_api_lists_balances_and_enforces_roles(client, w):
     assert client.post(f"/api/v1/advances/{aid}/accept", headers=au).status_code == 403
     assert client.post(f"/api/v1/advances/{aid}/accept", headers=an).status_code == 200
     assert client.post(f"/api/v1/advances/{aid}/accept", headers=an).status_code == 409
+
+
+def test_an_undecided_overpayment_is_not_offered_for_application_until_it_is_held_on_account(w):
+    c, inv, t, p = overpaid(w, extra=30_000_00)             # exception still open: refund or hold?
+    w.invoice(c, "INV/26-27/1300", 20_000_00, days_ago=1)
+    assert advances.propose_applications(w.db, w.e)["proposed"] == 0
+    ex = w.db.execute(select(ExceptionCase).where(ExceptionCase.type == ExceptionType.overpayment)).scalar_one()
+    workflow.resolve_exception(w.db, w.users["ar_analyst"], ex, "on_account", {})
+    assert advances.propose_applications(w.db, w.e)["proposed"] == 1

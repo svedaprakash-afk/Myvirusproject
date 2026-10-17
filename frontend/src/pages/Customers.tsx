@@ -36,6 +36,29 @@ export default function Customers() {
   );
 }
 
+function TrustPanel({ id }: { id: number }) {
+  const { can } = useApp();
+  const t = useAsync(() => api.get<any>(`/customers/${id}/trust`), [id]);
+  const { run, busy } = useAction();
+  const [open, setOpen] = useState(false); const [mode, setMode] = useState("auto"); const [note, setNote] = useState(""); const [thr, setThr] = useState("");
+  if (!t.data) return null;
+  const x = t.data, can_set = can("ar_manager", "finance_head");
+  const label = x.mode === "auto" ? "Straight-through" : x.mode === "suggest_only" ? "Suggest-only (pinned)" : x.enabled ? `Learning ${x.clean_streak}/${x.graduate_after}` : "Learning (graduation off for this entity)";
+  return (
+    <div className="card">
+      <div className="row between wrap"><h2 style={{ margin: 0 }}>Straight-through trust <Chip tone={x.mode === "auto" ? "good" : x.mode === "suggest_only" ? "bad" : "warn"}>{label}</Chip></h2>{can_set && <button className="btn sm" onClick={() => { setMode(x.mode === "learning" ? "auto" : x.mode); setThr(x.threshold_override ? String(x.threshold_override * 100) : ""); setNote(""); setOpen(true); }}>Change</button>}</div>
+      <p className="muted" style={{ marginBottom: 0 }}>{x.confirmed} confirmed · {x.corrections} corrections{x.pinned ? " · set by a manager" : ""}{x.threshold_override ? ` · needs ≥ ${(x.threshold_override * 100).toFixed(1)}% confidence` : ""}.{x.note ? ` ${x.note}` : ""}{!x.enabled && " Per-customer graduation is off in Settings, so entity-wide rules apply."}</p>
+      <Modal open={open} onClose={() => setOpen(false)} title="Straight-through trust">
+        <Field label="Mode" hint="Learning hands control back to automation; the other two are pinned until you change them."><select value={mode} onChange={(e) => setMode(e.target.value)}><option value="learning">Learning (automation decides when to graduate)</option><option value="auto">Straight-through (pinned)</option><option value="suggest_only">Suggest-only (pinned: always a person)</option></select></Field>
+        <Field label="Stricter confidence needed (%)" hint="Optional. Can only raise the bar above the entity threshold."><input value={thr} onChange={(e) => setThr(e.target.value)} inputMode="decimal" placeholder="e.g. 97" /></Field>
+        <Field label="Reason" hint={mode === "auto" ? "Required when pinning straight-through." : undefined}><input value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+        <div className="row between"><button className="btn" onClick={() => setOpen(false)}>Cancel</button>
+          <button className="btn primary" disabled={busy || (mode === "auto" && !note.trim()) || (thr !== "" && !(parseFloat(thr) >= 50 && parseFloat(thr) < 100))} onClick={async () => { if (await run(() => api.post(`/customers/${id}/trust`, { mode, note, ...(thr === "" ? { clear_threshold: true } : { threshold_override: parseFloat(thr) / 100 }) }), "Saved and audited")) { setOpen(false); t.reload(); } }}>Save</button></div>
+      </Modal>
+    </div>
+  );
+}
+
 function CustomerDetail({ id, onSaved }: { id: number; onSaved: () => void }) {
   const { can } = useApp();
   const d = useAsync(() => api.get<any>(`/customers/${id}`), [id]);
@@ -52,6 +75,7 @@ function CustomerDetail({ id, onSaved }: { id: number; onSaved: () => void }) {
           <div><div className="faint">Virtual account</div><span className="mono">{c.virtual_account_no ?? "—"}</span></div><div><div className="faint">Tier</div>{c.tier}</div>
         </div>
       </div>
+      <TrustPanel id={id} />
       <div className="grid g2">
         <div className="card"><h2>Learned behaviour</h2>{p ? <table><tbody>
           <tr><td className="muted">Payments learned from</td><td className="num">{p.payments}</td></tr><tr><td className="muted">Multi-invoice payments</td><td className="num">{p.multi_invoice_payments}</td></tr><tr><td className="muted">With TDS</td><td className="num">{p.tds_payments}</td></tr>

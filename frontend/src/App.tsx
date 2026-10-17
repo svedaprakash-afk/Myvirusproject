@@ -14,6 +14,7 @@ import Customers from "./pages/Customers";
 import Tds from "./pages/Tds";
 import Import from "./pages/Import";
 import Audit from "./pages/Audit";
+import Advances from "./pages/Advances";
 import Settings from "./pages/Settings";
 import Connections from "./pages/Connections";
 
@@ -37,6 +38,7 @@ function Shell() {
           {item("/exceptions", "Exceptions", counts.exceptions)}
           {item("/approvals", "Approvals", counts.approvals)}
           {item("/receipts", "Receipts")}
+          {item("/advances", "On account")}
           <div className="group">Close the loop</div>
           {item("/posting", "ERP posting")}
           {item("/tds", "TDS tracker")}
@@ -69,6 +71,7 @@ function Shell() {
             <Route path="/exceptions" element={<Exceptions />} />
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/receipts" element={<Receipts />} />
+            <Route path="/advances" element={<Advances />} />
             <Route path="/posting" element={<Posting />} />
             <Route path="/tds" element={<Tds />} />
             <Route path="/customers" element={<Customers />} />

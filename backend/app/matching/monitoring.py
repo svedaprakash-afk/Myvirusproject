@@ -125,7 +125,8 @@ def health(db: Session, entity_id: int, window_days: int = 14, baseline_days: in
         if ece > 0.1:
             out["alerts"].append({"level": "medium", "code": "miscalibrated", "message": f"Stated confidence is off from observed accuracy by {ece:.0%} on average (expected calibration error)."})
     out["calibration"] = {"n_labelled": len(lab), "ece": ece, "bins": cal}
-    out["status"] = "alert" if any(a["level"] == "high" for a in out["alerts"]) else "watch" if any(a["level"] == "medium" for a in out["alerts"]) else "ok"
+    out["status"] = ("alert" if any(a["level"] == "high" for a in out["alerts"]) else "watch" if any(a["level"] == "medium" for a in out["alerts"])
+                     else "no_data" if s is None else "ok")
     return out
 
 

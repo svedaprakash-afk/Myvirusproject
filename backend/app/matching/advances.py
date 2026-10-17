@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from .. import audit
 from ..indian import normalise_ref
-from ..models import (DEFAULT_LEDGERS, Adjustment, AdvanceApplication, Customer, Invoice, LegalEntity, MatchProposal, OnAccountBalance,
+from ..models import (DEFAULT_LEDGERS, Adjustment, AdvanceApplication, Customer, ExceptionCase, ExceptionStatus, ExceptionType, Invoice, LegalEntity, MatchProposal, OnAccountBalance,
                       PaymentTransaction, RemittanceDocument, utcnow)
 
 
@@ -68,9 +68,14 @@ def propose_applications(db: Session, entity: LegalEntity) -> dict:
     made = skipped_foreign = 0
     bals = db.execute(select(OnAccountBalance).where(OnAccountBalance.entity_id == entity.id, OnAccountBalance.status == "open",
                                                      OnAccountBalance.remaining_minor > 0).order_by(OnAccountBalance.id)).scalars().all()
+    undecided = {x for (x,) in db.execute(select(ExceptionCase.proposal_id).where(
+        ExceptionCase.entity_id == entity.id, ExceptionCase.type == ExceptionType.overpayment, ExceptionCase.proposal_id.is_not(None),
+        ExceptionCase.status.in_([ExceptionStatus.open, ExceptionStatus.in_progress, ExceptionStatus.pending_approval])))}
     for b in bals:
         if b.currency != base:
             skipped_foreign += 1
+            continue
+        if b.proposal_id in undecided:     # someone still has to choose between holding the excess on account and refunding it
             continue
         txn = db.get(PaymentTransaction, b.txn_id)
         remit = db.get(RemittanceDocument, txn.remittance_id) if txn.remittance_id else None

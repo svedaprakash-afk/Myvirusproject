@@ -43,7 +43,7 @@ export default function Import() {
           </>}
           {tab === "remit" && <>
             <Field label="Paste email / portal text"><textarea style={{ minHeight: 150 }} value={text} onChange={(e) => setText(e.target.value)} placeholder={"From: Acme Industries\nUTR: HDFCN26274000111\nINV-1001  1,18,000.00  TDS 2,000.00  Net 1,16,000.00\nTotal payment: 1,16,000.00"} /></Field>
-            <Field label="…or upload a file (PDF, XLSX, EML, TXT)"><input ref={file} type="file" accept=".pdf,.xlsx,.eml,.txt,.csv" /></Field>
+            <Field label="…or upload a file (PDF, scanned image, XLSX, CSV, EML, TXT)" hint="Scanned PDFs and photos are read with OCR on the server; nothing leaves your infrastructure."><input ref={file} type="file" accept=".pdf,.xlsx,.eml,.txt,.csv,.png,.jpg,.jpeg,.tif,.tiff" /></Field>
             <button className="btn primary" disabled={busy} onClick={() => (text.trim() || file.current?.files?.[0]) ? send("/ingest/remittance", { entity_id: String(entity.id), source: "manual", ...(text.trim() ? { text } : {}) }) : toast("Paste text or choose a file", true)}>Extract & link</button>
           </>}
         </div>
@@ -52,6 +52,11 @@ export default function Import() {
           {!out ? <span className="muted">Nothing imported in this session.</span> : <>
             <table><tbody>{Object.entries(out).filter(([k, v]) => typeof v !== "object").map(([k, v]) => <tr key={k}><td className="muted">{k.replace(/_/g, " ")}</td><td className="num">{String(v)}</td></tr>)}</tbody></table>
             {out.warnings?.length > 0 && <div className="mt"><h3>Warnings</h3>{out.warnings.map((w: string, i: number) => <div key={i} className="note warn">{w}</div>)}</div>}
+            {out.extracted?.meta && <div className="mt">
+              {out.extracted.meta.reconciled === true && <div className="note good">Lines add up to the stated total.</div>}
+              {out.extracted.meta.reconciled === false && <div className="note warn">Lines do not add up to the stated total.</div>}
+              {(out.extracted.meta.warnings ?? []).map((w: string, i: number) => <div key={i} className="note warn">{w}</div>)}
+              <div className="faint" style={{ fontSize: 12 }}>Confidence {Math.round((out.extracted.confidence ?? 0) * 100)}%{out.extracted.meta.source_method === "ocr" ? ` · read by OCR (${out.extracted.meta.ocr_confidence}% word confidence)` : ""}{out.extractor === "llm" || out.extractor === "rules+llm" ? " · AI fallback consulted" : ""}</div></div>}
             {out.extracted && <><h3 className="mt">Extracted ({out.extractor}) {out.linked_txn_id ? <Chip tone="good">linked to receipt #{out.linked_txn_id}</Chip> : <Chip tone="warn">no receipt linked yet</Chip>}</h3><div className="pre">{JSON.stringify(out.extracted, null, 2)}</div></>}
           </>}
           {out && tab !== "remit" && <p className="mt"><button className="btn primary" disabled={busy} onClick={() => run(() => api.post<any>("/matching/run", { entity_id: entity.id }), (r) => `${r.processed} processed: ${r.auto} auto, ${r.review} review, ${r.exception} exceptions`)}>Run matching now</button></p>}

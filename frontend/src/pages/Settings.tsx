@@ -15,7 +15,7 @@ function Controls() {
   const cfg = useAsync(() => api.get<any>(`/entities/${entity.id}/config`), [entity.id]);
   const [f, setF] = useState<any>(null); const { run, busy } = useAction();
   const cKey = JSON.stringify(cfg.data);
-  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cKey]); // eslint-disable-line
+  useEffect(() => { if (cfg.data) setF({ ...cfg.data.config, trust: { enabled: false, graduate_after: 5, ...(cfg.data.config.trust_graduation ?? {}) }, tolerance: String((cfg.data.tolerances.find((t: any) => !t.customer_id && !t.currency)?.abs_minor ?? 100) / 100), max: String(cfg.data.config.auto_approve_max_minor / 100) }); }, [cKey]); // eslint-disable-line
   if (cfg.error) return <ErrorBox msg={cfg.error} />;
   if (!f) return <Loading />;
   const editable = can("admin", "finance_head");
@@ -38,7 +38,10 @@ function Controls() {
           ["auto_approve_amount_only", "Allow auto-approval on exact amount without an invoice reference", "Higher automation, higher risk. Enable only after reviewing precision on your own data."],
           ["straight_through_release", "Release posting batches without a second person", "Removes a segregation-of-duties control. Not recommended."]] as const).map(([k, l, h]) => (
           <div key={k} className="field"><label className="row" style={{ textTransform: "none", fontSize: 13.5, color: "var(--text)" }}><input type="checkbox" style={{ width: "auto" }} checked={!!f[k]} disabled={!editable} onChange={(e) => set(k, e.target.checked)} />{l}</label><div className="faint" style={{ fontSize: 12, marginLeft: 22 }}>{h}</div></div>))}
-        <button className="btn primary" disabled={!editable || busy || invalid} onClick={() => run(() => api.put(`/entities/${entity.id}/config`, { auto_approve_threshold: f.auto_approve_threshold, review_threshold: f.review_threshold, auto_approve_enabled: f.auto_approve_enabled, auto_approve_amount_only: f.auto_approve_amount_only, auto_approve_cross_currency: f.auto_approve_cross_currency, straight_through_release: f.straight_through_release, sla_hours: f.sla_hours, max_subset_size: f.max_subset_size, default_tolerance_minor: tol, auto_approve_max_minor: mx }), "Saved and audited").then(cfg.reload)}>Save changes</button>
+        <div className="field"><label className="row" style={{ textTransform: "none", fontSize: 13.5, color: "var(--text)" }}><input type="checkbox" style={{ width: "auto" }} checked={!!f.trust.enabled} disabled={!editable} onChange={(e) => set("trust", { ...f.trust, enabled: e.target.checked })} />Each customer must earn straight-through</label>
+          <div className="faint" style={{ fontSize: 12, marginLeft: 22 }}>Customers start in a learning phase where every match waits for a person. After this many confirmed matches in a row with no correction they graduate; a rejection, override or reversed auto-match resets them. Managers can pin a customer on their page.</div>
+          {f.trust.enabled && <div style={{ marginLeft: 22, marginTop: 6 }}><Field label="Confirmed matches in a row before a customer graduates"><input type="number" min={1} max={50} value={f.trust.graduate_after} disabled={!editable} onChange={(e) => set("trust", { ...f.trust, graduate_after: Number(e.target.value) })} style={{ width: 90 }} /></Field></div>}</div>
+        <button className="btn primary" disabled={!editable || busy || invalid || !(f.trust.graduate_after >= 1 && f.trust.graduate_after <= 50)} onClick={() => run(() => api.put(`/entities/${entity.id}/config`, { trust_graduation: { enabled: !!f.trust.enabled, graduate_after: f.trust.graduate_after }, auto_approve_threshold: f.auto_approve_threshold, review_threshold: f.review_threshold, auto_approve_enabled: f.auto_approve_enabled, auto_approve_amount_only: f.auto_approve_amount_only, auto_approve_cross_currency: f.auto_approve_cross_currency, straight_through_release: f.straight_through_release, sla_hours: f.sla_hours, max_subset_size: f.max_subset_size, default_tolerance_minor: tol, auto_approve_max_minor: mx }), "Saved and audited").then(cfg.reload)}>Save changes</button>
       </div>
       <div className="card"><h2>Guardrails (always on)</h2><p className="muted">These are plain code, independent of any model, and cannot be tuned away:</p>
         <ul style={{ paddingLeft: 18, margin: 0 }}>{["Payer must be identified with high certainty and unambiguously", "Payer name must resemble the customer (third-party payers need a human)", "Only one plausible invoice combination", "No short-pay, overpayment or unapplied residual", "No disputed invoice; credit notes only when referenced", "TDS must be at the customer's usual rate and base", "Invoice not already proposed for another receipt", "Currency must match; possible duplicates are stopped"].map((g) => <li key={g}>{g}</li>)}</ul></div>
@@ -46,20 +49,59 @@ function Controls() {
   );
 }
 
+function Health() {
+  const { entity } = useApp();
+  const h = useAsync(() => api.get<any>(`/models/health?entity_id=${entity.id}`), [entity.id]);
+  if (!h.data) return null;
+  const d = h.data, tone = d.status === "alert" ? "bad" : d.status === "watch" ? "warn" : d.status === "ok" ? "good" : "";
+  return (
+    <div className="card mb">
+      <div className="row between wrap"><h2 style={{ margin: 0 }}>Model health <Chip tone={tone}>{String(d.status).replace("_", " ")}</Chip></h2><span className="faint">last {d.window_days} days vs the {d.baseline_days} before · {d.n_recent} / {d.n_baseline} proposals</span></div>
+      {d.alerts.length === 0 ? <p className="muted">No drift detected.</p> : d.alerts.map((a: any, i: number) => <div key={i} className={`note ${a.level === "high" ? "bad" : a.level === "medium" ? "warn" : ""} mt`}>{a.message}</div>)}
+      <div className="grid g4 mt" style={{ fontSize: 13 }}>
+        <div><div className="faint">Confidence shift (PSI)</div><b className="num">{d.confidence_psi ?? "n/a"}</b></div>
+        <div><div className="faint">Straight-through rate</div><b className="num">{d.rates.auto === null ? "n/a" : pct(d.rates.auto)}</b>{d.rates.auto_baseline !== null && <span className="faint"> (was {pct(d.rates.auto_baseline)})</span>}</div>
+        <div><div className="faint">Reviewer overturn rate</div><b className="num">{d.overturn.recent.rate === null ? "n/a" : pct(d.overturn.recent.rate)}</b><span className="faint"> of {d.overturn.recent.judged}</span></div>
+        <div><div className="faint">Calibration error</div><b className="num">{d.calibration.ece === null ? "n/a" : pct(d.calibration.ece)}</b><span className="faint"> on {d.calibration.n_labelled} labelled</span></div>
+      </div>
+      {d.feature_shifts.length > 0 && <p className="faint mt" style={{ fontSize: 12.5, marginBottom: 0 }}>Largest feature shifts: {d.feature_shifts.map((x: any) => `${x.feature.replace(/_/g, " ")} ${x.baseline} → ${x.recent}`).join(" · ")}</p>}
+      <p className="faint" style={{ fontSize: 12, marginBottom: 0 }}>{d.caveats.join(" ")}</p>
+    </div>
+  );
+}
+
+function ShadowReport() {
+  const { entity } = useApp();
+  const r = useAsync(() => api.get<any>(`/models/shadow?entity_id=${entity.id}`), [entity.id]);
+  if (!r.data || !r.data.shadow) return null;
+  const d = r.data, rec = d.recommendation;
+  return (
+    <div className="card mb">
+      <div className="row between wrap"><h2 style={{ margin: 0 }}>Shadow test: {d.shadow}</h2><Chip tone={rec === "promote_candidate" ? "good" : rec === "keep_active" ? "warn" : ""}>{String(rec ?? "").replace(/_/g, " ")}</Chip></div>
+      <p className="muted">{d.message} <span className="faint">({d.scored} scored, {d.labelled} labelled by people)</span></p>
+      {d.active && <table><thead><tr><th /><th className="num">Log-loss</th><th className="num">Brier</th><th className="num">Would auto-approve</th><th className="num">Precision there</th></tr></thead><tbody>
+        {([["Active model", d.active], ["Candidate", d.candidate]] as const).map(([n, x]) => <tr key={n}><td><b>{n}</b></td><td className="num">{x.logloss}</td><td className="num">{x.brier}</td><td className="num">{x.would_auto}</td><td className="num">{x.precision === null ? "n/a" : pct(x.precision)}</td></tr>)}</tbody></table>}
+      {d.disagreements && <p className="faint mt" style={{ marginBottom: 0 }}>Candidate would auto-approve {d.disagreements.candidate_would_auto_active_would_not} the active model would not; the reverse for {d.disagreements.active_would_auto_candidate_would_not}. {d.caveats.join(" ")}</p>}
+    </div>
+  );
+}
+
 function Models() {
-  const { can } = useApp();
+  const { can, entity } = useApp();
   const m = useAsync(() => api.get<any>(`/models`), []);
   const { run, busy } = useAction();
   const allowed = can("admin", "finance_head");
   if (!m.data) return <Loading />;
   return (
     <>
+      <Health />
+      <ShadowReport />
       <div className="card mb"><div className="row between wrap"><div><h2 style={{ margin: 0 }}>Analyst feedback collected</h2><div className="muted">{m.data.feedback.total} decisions · {m.data.feedback.positive} accepted · {m.data.feedback.negative} rejected or reversed</div></div>
         <button className="btn primary" disabled={!allowed || busy} onClick={() => run(() => api.post<any>("/models/retrain"), (r) => `Candidate ${r.version} trained (holdout loss ${r.metrics.holdout_logloss_candidate} vs ${r.metrics.holdout_logloss_active} active)`).then(m.reload)}>Train candidate model</button></div>
         <p className="faint" style={{ marginBottom: 0, fontSize: 12.5 }}>A candidate never goes live by itself: you compare held-out loss, then promote it. Any previous version can be re-activated instantly (rollback). Guardrails apply to every model.</p></div>
       <div className="card flush"><table><thead><tr><th>Version</th><th>Status</th><th>Trained</th><th>Holdout log-loss</th><th>Notes</th><th /></tr></thead>
-        <tbody>{m.data.items.map((x: any) => (<tr key={x.id}><td><b>{x.version}</b></td><td>{x.active ? <Chip tone="good">active</Chip> : <Chip>inactive</Chip>}</td><td>{date(x.created_at)}</td><td>{x.metrics.holdout_logloss_candidate ?? "—"}{x.metrics.holdout_logloss_active !== undefined && <span className="faint"> (was {x.metrics.holdout_logloss_active})</span>}</td><td className="muted">{x.note}</td>
-          <td style={{ textAlign: "right" }}>{!x.active && allowed && <button className="btn sm" disabled={busy} onClick={() => confirm(`Activate ${x.version}?`) && run(() => api.post(`/models/${x.id}/activate`), "Activated").then(m.reload)}>Activate</button>}</td></tr>))}</tbody></table></div>
+        <tbody>{m.data.items.map((x: any) => (<tr key={x.id}><td><b>{x.version}</b></td><td>{x.active ? <Chip tone="good">active</Chip> : x.shadow ? <Chip tone="info">shadow test</Chip> : <Chip>inactive</Chip>}</td><td>{date(x.created_at)}</td><td>{x.metrics.holdout_logloss_candidate ?? "—"}{x.metrics.holdout_logloss_active !== undefined && <span className="faint"> (was {x.metrics.holdout_logloss_active})</span>}</td><td className="muted">{x.note}</td>
+          <td style={{ textAlign: "right" }}>{!x.active && allowed && <span className="row" style={{ justifyContent: "flex-end" }}><button className="btn sm" disabled={busy} onClick={() => run(() => api.post(`/models/${x.id}/shadow`, { enabled: !x.shadow }), x.shadow ? "Shadow test stopped" : "Shadow test started: new proposals are also scored by this model").then(m.reload)}>{x.shadow ? "Stop shadow" : "Run as shadow"}</button><button className="btn sm" disabled={busy} onClick={() => confirm(`Activate ${x.version}?`) && run(() => api.post(`/models/${x.id}/activate`), "Activated").then(m.reload)}>Activate</button></span>}</td></tr>))}</tbody></table></div>
       <div className="card mt"><h2>Active weights</h2>{(() => { const a = m.data.items.find((x: any) => x.active); return a ? <div className="grid g3">{Object.entries(a.weights).map(([k, v]: any) => <div key={k} className="row between"><span className="muted">{k.replace(/_/g, " ")}</span><b className="num" style={{ color: v < 0 ? "var(--bad)" : "inherit" }}>{v.toFixed(2)}</b></div>)}</div> : null; })()}</div>
     </>
   );

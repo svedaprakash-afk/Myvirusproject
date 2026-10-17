@@ -43,7 +43,7 @@ def test_health_flags_a_confidence_shift_and_reversed_auto_matches(w):
 def test_health_says_it_cannot_judge_with_little_data_instead_of_reporting_ok_silently(w):
     mk(w, 0.9, ProposalStatus.pending_review, 1, decided=False)
     h = monitoring.health(w.db, w.e.id)
-    assert h["confidence_psi"] is None and h["alerts"][0]["code"] == "insufficient_data" and h["status"] == "ok"
+    assert h["confidence_psi"] is None and h["alerts"][0]["code"] == "insufficient_data" and h["status"] == "no_data"
 
 
 def test_overturn_rate_alert_requires_a_real_increase(w):
