@@ -47,6 +47,21 @@ class Settings:
     s3_sse: str = field(default_factory=lambda: os.getenv("S3_SSE", ""))            # AES256 | aws:kms | none (explicit: store encrypts at rest itself)
     s3_kms_key_id: str = field(default_factory=lambda: os.getenv("S3_KMS_KEY_ID", ""))
     s3_path_style: bool = field(default_factory=lambda: os.getenv("S3_PATH_STYLE", "0") == "1")   # MinIO/Ceph usually need path-style
+    # Single sign-on (OpenID Connect, authorization code + PKCE) and SCIM provisioning. Secrets come from the environment only.
+    sso_issuer: str = field(default_factory=lambda: os.getenv("SSO_ISSUER", "").rstrip("/"))
+    sso_client_id: str = field(default_factory=lambda: os.getenv("SSO_CLIENT_ID", ""))
+    sso_client_secret: str = field(default_factory=lambda: os.getenv("SSO_CLIENT_SECRET", ""))
+    sso_redirect_uri: str = field(default_factory=lambda: os.getenv("SSO_REDIRECT_URI", ""))        # https://<host>/api/v1/auth/sso/callback
+    sso_scopes: str = field(default_factory=lambda: os.getenv("SSO_SCOPES", "openid email profile"))
+    sso_group_claim: str = field(default_factory=lambda: os.getenv("SSO_GROUP_CLAIM", "groups"))
+    sso_role_map: str = field(default_factory=lambda: os.getenv("SSO_ROLE_MAP", ""))                 # JSON: {"<group>": "<role>", ...}; first match wins
+    sso_jit_role: str = field(default_factory=lambda: os.getenv("SSO_JIT_ROLE", ""))                 # create unknown users with this role; empty = refuse unknown users
+    sso_enforce: bool = field(default_factory=lambda: os.getenv("SSO_ENFORCE", "0") == "1")           # password login disabled for everyone except the admin break-glass role
+    sso_allowed_domains: tuple[str, ...] = field(default_factory=lambda: tuple(d.strip().lower() for d in os.getenv("SSO_ALLOWED_DOMAINS", "").split(",") if d.strip()))
+    sso_frontend_url: str = field(default_factory=lambda: os.getenv("SSO_FRONTEND_URL", "/"))
+    scim_token: str = field(default_factory=lambda: os.getenv("SCIM_TOKEN", ""))
+    scim_default_role: str = field(default_factory=lambda: os.getenv("SCIM_DEFAULT_ROLE", "auditor"))
+    scim_allowed_roles: tuple[str, ...] = field(default_factory=lambda: tuple(r.strip() for r in os.getenv("SCIM_ALLOWED_ROLES", "ar_analyst,ar_manager,treasury,auditor").split(",") if r.strip()))
     feed_root: str = field(default_factory=lambda: os.getenv("FEED_ROOT", "./feeds"))
     export_dir: str = field(default_factory=lambda: os.getenv("EXPORT_DIR", "./exports"))
 

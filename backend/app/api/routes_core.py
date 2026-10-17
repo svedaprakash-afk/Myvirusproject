@@ -8,11 +8,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from .. import audit
+from .. import audit, config, sso
 from ..db import get_db
 from ..ingestion import service as ing
 from ..ingestion.statements import StatementError
-from ..models import (BankAccount, Customer, CustomerIdentifier, CustomerProfile, CustomerTrust, DEFAULT_ENTITY_CONFIG, Invoice, LegalEntity, ToleranceRule, User)
+from ..models import (BankAccount, Customer, CustomerIdentifier, CustomerProfile, CustomerTrust, DEFAULT_ENTITY_CONFIG, Invoice, LegalEntity, Role, ToleranceRule, User)
 from ..matching import trust
 from ..posting.connectors import REGISTRY
 from ..security import can_see_pii, current_user, make_token, require, verify_password
@@ -34,6 +34,10 @@ def login(body: LoginIn, db: Session = Depends(get_db)):
         audit.log(db, body.email[:100], "auth.failed", "User", u.id if u else "-", None, {})
         db.commit()
         raise HTTPException(401, "Invalid credentials")
+    if config.settings.sso_enforce and sso.enabled() and u.role != Role.admin:
+        audit.log(db, u.name, "auth.password_refused", "User", u.id, None, {"reason": "sso enforced"}, u.id)
+        db.commit()
+        raise HTTPException(403, "Password sign-in is turned off for your account. Use single sign-on.")
     audit.log(db, u.name, "auth.login", "User", u.id, None, {}, u.id)
     return {"token": make_token(u), "user": {"id": u.id, "name": u.name, "email": u.email, "role": u.role.value}}
 

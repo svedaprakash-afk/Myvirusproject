@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 
 from .config import assert_safe_for_production, settings
 from .db import Base, SessionLocal, engine
-from .api import routes_core, routes_integrations, routes_ops, routes_posting, routes_reports, routes_tax
+from .api import routes_core, routes_integrations, routes_ops, routes_posting, routes_reports, routes_sso, routes_tax
 
 log = logging.getLogger("cashapp")
 
@@ -51,5 +51,18 @@ def health():
     return {"status": "ok", "region": settings.deploy_region or None, "residency_strict": settings.residency_strict}
 
 
-for r in (routes_core.router, routes_integrations.router, routes_ops.router, routes_posting.router, routes_reports.router, routes_tax.router):
+for r in (routes_core.router, routes_integrations.router, routes_ops.router, routes_posting.router, routes_reports.router, routes_tax.router, routes_sso.router):
     app.include_router(r, prefix="/api/v1")
+
+
+app.include_router(routes_sso.scim)
+
+
+@app.exception_handler(routes_sso.ScimError)
+async def _scim_error(request, exc: routes_sso.ScimError):
+    from fastapi.responses import JSONResponse
+
+    body = {"schemas": [routes_sso.SCIM_ERR], "status": str(exc.status), "detail": exc.detail}
+    if exc.scim_type:
+        body["scimType"] = exc.scim_type
+    return JSONResponse(body, status_code=exc.status, media_type=routes_sso.MEDIA)
