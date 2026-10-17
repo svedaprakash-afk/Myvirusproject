@@ -114,7 +114,7 @@ def test_rest_json_feed_maps_any_bank_api_shape(w, monkeypatch):
 
 
 def test_feed_validation_refuses_planned_and_insecure():
-    assert feeds.validate_feed({"type": "sftp_native"})[0].startswith("feed type 'sftp_native' is planned")
+    assert feeds.validate_feed({"type": "bank_specific_api"})[0].startswith("feed type 'bank_specific_api' is planned")
     assert any("https" in e for e in feeds.validate_feed({"type": "rest_json", "url": "http://x", "records_path": "a", "map": {"date": "d", "amount": "a", "narration": "n"}}))
     assert feeds.validate_feed({"type": "nonsense"})
 
