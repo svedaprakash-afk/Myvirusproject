@@ -20,7 +20,7 @@ def customer(c: Customer | None, brief: bool = True) -> dict | None:
     out = {"id": c.id, "code": c.code, "name": c.name, "tier": c.tier}
     if not brief:
         out |= {"gstin": c.gstin, "pan": c.pan, "payment_terms_days": c.payment_terms_days, "tds_rate_bp": c.tds_rate_bp, "tds_section": c.tds_section,
-                "tds_base": c.tds_base, "virtual_account_no": c.virtual_account_no, "email": c.email}
+                "tds_base": c.tds_base, "virtual_account_no": c.virtual_account_no, "email": c.email, "tan": c.tan}
     return out
 
 
@@ -72,7 +72,7 @@ def approval(a: ApprovalRequest, users: dict[int, User] | None = None) -> dict:
 
 def tds(t: TdsEntry) -> dict:
     return {"id": t.id, "customer": customer(t.customer), "invoice": t.invoice.number, "txn_date": d(t.txn_date), "fy": t.fy, "quarter": t.quarter,
-            "section": t.section, "rate_bp": t.rate_bp, "amount_minor": t.amount_minor, "certificate_received": t.certificate_received, "in_26as": t.in_26as,
+            "section": t.section, "rate_bp": t.rate_bp, "amount_minor": t.amount_minor, "kind": t.kind, "certificate_received": t.certificate_received, "in_26as": t.in_26as,
             "reversed": t.reversed}
 
 

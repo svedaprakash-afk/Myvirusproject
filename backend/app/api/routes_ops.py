@@ -262,10 +262,12 @@ def decide(aid: int, body: DecideIn, user: User = Depends(require("approve")), d
 
 # ---------------------------------------------------------------------------------------------- TDS
 @router.get("/tds")
-def tds(entity_id: int, certificate: str = "", fy: str = "", limit: int = 200, offset: int = 0, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+def tds(entity_id: int, certificate: str = "", fy: str = "", kind: str = "income_tax", limit: int = 200, offset: int = 0, user: User = Depends(require("view")), db: Session = Depends(get_db)):
     entity_for(db, user, entity_id)
     limit, offset = page(limit, offset)
     base = select(TdsEntry).where(TdsEntry.entity_id == entity_id, TdsEntry.reversed.is_(False))
+    if kind:
+        base = base.where(TdsEntry.kind == kind)
     if certificate == "pending":
         base = base.where(TdsEntry.certificate_received.is_(False))
     elif certificate == "received":
@@ -273,7 +275,7 @@ def tds(entity_id: int, certificate: str = "", fy: str = "", limit: int = 200, o
     if fy:
         base = base.where(TdsEntry.fy == fy)
     rows = db.execute(base.order_by(TdsEntry.txn_date.desc()).limit(limit).offset(offset)).scalars().all()
-    total_amt = db.scalar(select(func.coalesce(func.sum(TdsEntry.amount_minor), 0)).select_from(base.subquery()))
+    total_amt = db.scalar(base.with_only_columns(func.coalesce(func.sum(TdsEntry.amount_minor), 0)))
     return {"items": [S.tds(t) for t in rows], "total_amount_minor": int(total_amt or 0)}
 
 

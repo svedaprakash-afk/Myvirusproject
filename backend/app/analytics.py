@@ -16,10 +16,11 @@ OPEN_EXC = [ExceptionStatus.open, ExceptionStatus.in_progress, ExceptionStatus.p
 class Conv:
     """Convert any currency to the entity's base at the latest known rate; remember what could not be converted."""
 
-    def __init__(self, db: Session, entity_id: int):
+    def __init__(self, db: Session, entity_id: int, as_of: date | None = None):
         from .fx import rate_on
         from .models import LegalEntity
 
+        self.as_of = as_of or date.today()
         self.db, self.base = db, db.get(LegalEntity, entity_id).base_currency
         self._rate_on, self.missing, self._cache = rate_on, set(), {}
 
@@ -27,7 +28,7 @@ class Conv:
         if ccy == self.base:
             return amount
         if ccy not in self._cache:
-            self._cache[ccy] = self._rate_on(self.db, ccy, date.today(), self.base)
+            self._cache[ccy] = self._rate_on(self.db, ccy, self.as_of, self.base)
         r = self._cache[ccy]
         if r is None:
             self.missing.add(ccy)
@@ -83,7 +84,7 @@ def summary(db: Session, entity_id: int, today: date | None = None) -> dict:
     dso = round(ar_total / sales90 * 90, 1) if sales90 > 0 else None
 
     tds_wait = db.scalar(select(func.coalesce(func.sum(TdsEntry.amount_minor), 0)).where(
-        TdsEntry.entity_id == entity_id, TdsEntry.certificate_received.is_(False), TdsEntry.reversed.is_(False))) or 0
+        TdsEntry.entity_id == entity_id, TdsEntry.certificate_received.is_(False), TdsEntry.reversed.is_(False), TdsEntry.kind == "income_tax")) or 0
     pending_appr = db.scalar(select(func.count()).select_from(ApprovalRequest).where(
         ApprovalRequest.entity_id == entity_id, ApprovalRequest.status == ApprovalStatus.pending)) or 0
     review = db.scalar(select(func.count()).select_from(MatchProposal).where(

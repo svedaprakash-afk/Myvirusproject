@@ -11,6 +11,7 @@ from ..models import (Customer, CustomerIdentifier, CustomerProfile, ExceptionCa
 
 
 from . import advances, trust
+from .tds import split_components
 
 
 class ActionError(ValueError):
@@ -46,9 +47,9 @@ def apply_proposal(db: Session, ctx, p: MatchProposal, actor: str, actor_id: int
     txn.customer_id = p.customer_id or txn.customer_id
     fy, q = financial_year(txn.txn_date)
     for a in p.allocations:
-        if a.tds_minor:
+        for kind, section, rate, amt in (split_components(a.tds_section, a.tds_rate_bp, a.tds_minor) if a.tds_minor else []):
             db.add(TdsEntry(entity_id=p.entity_id, customer_id=a.invoice.customer_id, invoice_id=a.invoice_id, proposal_id=p.id,
-                            txn_date=txn.txn_date, fy=fy, quarter=q, section=a.tds_section, rate_bp=a.tds_rate_bp, amount_minor=a.tds_minor))
+                            txn_date=txn.txn_date, fy=fy, quarter=q, section=section, rate_bp=rate, amount_minor=amt, kind=kind))
     _residual_exceptions(db, p, txn, ctx)
     advances.create_balance(db, p, txn)
     # close open exceptions on this txn that this proposal superseded

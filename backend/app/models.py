@@ -136,12 +136,18 @@ DEFAULT_ENTITY_CONFIG = {
     "max_subset_size": 8,
     # per-customer graduation to straight-through (off by default: existing entities behave as before)
     "trust_graduation": {"enabled": False, "graduate_after": 5, "demote_on_correction": True},
+    # Section 194Q (buyer deducts on purchases of goods above a yearly threshold). Statutory values change with the Finance Act: confirm with your tax team.
+    "tds_194q_threshold_minor": 50_00_000_00,   # ₹50 lakh of purchases from the seller in the financial year
+    "tds_194q_rate_bp": 10,
+    "e_invoice_required": False,      # e-invoicing applies above the aggregate-turnover threshold in force: set per entity
+    "gstr1_frequency": "monthly",     # monthly | quarterly (QRMP)
 }
 DEFAULT_LEDGERS = {
     "ar_control": "1200-AR",
     "tds_receivable": "1350-TDS-RECV",
     "bank_charges": "5400-BANK-CHG",
     "gst_input_on_fees": "1360-GST-ITC",
+    "gst_tds_receivable": "1355-GST-TDS-RECV",
     "write_off": "5900-WRITEOFF",
     "unapplied_cash": "2150-UNAPPLIED",
     "intercompany": "1500-INTERCO",
@@ -186,6 +192,7 @@ class Customer(Base):
     interco_entity_id: Mapped[int | None] = mapped_column(ForeignKey("legal_entities.id"))
     ar_ledger: Mapped[str | None] = mapped_column(String(50))
     email: Mapped[str | None] = mapped_column(String(200))
+    tan: Mapped[str | None] = mapped_column(String(10), index=True)      # the customer's TAN as a TDS deductor: how Form 26AS names them
     __table_args__ = (UniqueConstraint("entity_id", "code"),)
 
 
@@ -586,11 +593,56 @@ class TdsEntry(Base):
     section: Mapped[str | None] = mapped_column(String(20))
     rate_bp: Mapped[int | None] = mapped_column(Integer)
     amount_minor: Mapped[int] = mapped_column(BigInteger)
+    kind: Mapped[str] = mapped_column(String(12), default="income_tax")   # income_tax (Form 16A / 26AS) | gst (GST-TDS s.51: credit via GSTR-7 / cash ledger)
     certificate_received: Mapped[bool] = mapped_column(Boolean, default=False)
     in_26as: Mapped[bool] = mapped_column(Boolean, default=False)
     reversed: Mapped[bool] = mapped_column(Boolean, default=False)
     customer: Mapped[Customer] = relationship()
     invoice: Mapped[Invoice] = relationship()
+
+
+class Form26asEntry(Base):
+    """One deduction line reported against our PAN in Form 26AS (or the AIS TDS section): what the deductor's TDS return says they paid in."""
+    __tablename__ = "form26as_entries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    source: Mapped[str] = mapped_column(String(6), default="26AS")      # 26AS | AIS
+    fy: Mapped[str] = mapped_column(String(9), index=True)
+    quarter: Mapped[str] = mapped_column(String(2))
+    deductor_tan: Mapped[str] = mapped_column(String(10), index=True)
+    deductor_name: Mapped[str] = mapped_column(String(250))
+    section: Mapped[str | None] = mapped_column(String(20))
+    txn_date: Mapped[date] = mapped_column(Date)                         # date of payment / credit as reported by the deductor
+    booking_date: Mapped[date | None] = mapped_column(Date)
+    booking_status: Mapped[str | None] = mapped_column(String(2))        # F final | P provisional | U unmatched | O overbooked (26AS legend)
+    amount_paid_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    tax_deducted_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    tds_deposited_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    customer_id: Mapped[int | None] = mapped_column(ForeignKey("customers.id"), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(64))
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("entity_id", "source", "dedupe_key"),)
+
+
+class GstDocument(Base):
+    """A document as the GST system holds it: an outward invoice or credit note reported in a GSTR-1 filing, or an e-invoice on the IRP register."""
+    __tablename__ = "gst_documents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    source: Mapped[str] = mapped_column(String(6))                  # GSTR1 | IRP
+    doc_type: Mapped[str] = mapped_column(String(3), default="INV")  # INV | CRN | DBN
+    doc_no: Mapped[str] = mapped_column(String(40))
+    doc_no_norm: Mapped[str] = mapped_column(String(40), index=True)
+    doc_date: Mapped[date] = mapped_column(Date)
+    party_gstin: Mapped[str | None] = mapped_column(String(15))
+    taxable_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    total_minor: Mapped[int] = mapped_column(BigInteger, default=0)
+    irn: Mapped[str | None] = mapped_column(String(64))
+    ack_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(3), default="ACT")   # ACT | CNL (cancelled IRN)
+    period: Mapped[str | None] = mapped_column(String(6))           # GSTR-1 filing period MMYYYY
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("entity_id", "source", "doc_type", "doc_no_norm"),)
 
 
 # ---------------------------------------------------------------- posting

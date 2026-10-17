@@ -72,8 +72,19 @@ class TrustCfgIn(BaseModel):
     demote_on_correction: bool | None = None
 
 
+class ProvisionRow(BaseModel):
+    from_days: int = Field(..., ge=0, le=3650)
+    pct_bp: int = Field(..., ge=0, le=10000)
+
+
 class ConfigIn(BaseModel):
     trust_graduation: TrustCfgIn | None = None
+    provision_matrix: list[ProvisionRow] | None = Field(None, min_length=1, max_length=12)
+    provision_disputed_bp: int | None = Field(None, ge=0, le=10000)
+    tds_194q_threshold_minor: int | None = Field(None, ge=0)
+    tds_194q_rate_bp: int | None = Field(None, ge=1, le=1000)
+    e_invoice_required: bool | None = None
+    gstr1_frequency: str | None = Field(None, pattern="^(monthly|quarterly)$")
     auto_approve_threshold: float | None = Field(None, ge=0.5, le=0.999)
     review_threshold: float | None = Field(None, ge=0.05, le=0.9)
     auto_approve_max_minor: int | None = Field(None, ge=0)
@@ -94,6 +105,13 @@ def set_config(entity_id: int, body: ConfigIn, user: User = Depends(require("con
     changes = body.model_dump(exclude_none=True)
     tol = changes.pop("default_tolerance_minor", None)
     before = {**DEFAULT_ENTITY_CONFIG, **(e.config or {})}
+    if "provision_matrix" in changes:
+        rows = sorted(changes["provision_matrix"], key=lambda r: r["from_days"])
+        if rows[0]["from_days"] != 0 or len({r["from_days"] for r in rows}) != len(rows):
+            raise HTTPException(422, "The provision matrix must start at 0 days and have one row per threshold")
+        if any(b["pct_bp"] < a["pct_bp"] for a, b in zip(rows, rows[1:])):
+            raise HTTPException(422, "Provision percentages cannot fall as invoices get older")
+        changes["provision_matrix"] = rows
     if "trust_graduation" in changes:
         changes["trust_graduation"] = {**(before.get("trust_graduation") or {}), **changes["trust_graduation"]}
     e.config = {**before, **changes}
@@ -175,6 +193,7 @@ class CustomerPatch(BaseModel):
     tds_section: str | None = None
     tds_base: str | None = Field(None, pattern="^(taxable|gross)$")
     virtual_account_no: str | None = None
+    tan: str | None = Field(None, pattern="^[A-Z]{4}[0-9]{5}[A-Z]$")
     payment_terms_days: int | None = Field(None, ge=0, le=365)
 
 
@@ -185,7 +204,7 @@ def patch_customer(cid: int, body: CustomerPatch, user: User = Depends(require("
     ch = body.model_dump(exclude_none=True)
     before = {k: getattr(c, k) for k in ch}
     for k, v in ch.items():
-        setattr(c, k, v or None if k in ("tds_rate_bp", "virtual_account_no", "tds_section") else v)
+        setattr(c, k, v or None if k in ("tds_rate_bp", "virtual_account_no", "tds_section", "tan") else v)
     audit.log(db, user.name, "customer.updated", "Customer", c.id, c.entity_id, {"before": before, "after": ch}, user.id)
     return S.customer(c, brief=False)
 

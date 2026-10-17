@@ -14,6 +14,7 @@ from ..config import settings
 from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PostingBatch, PostingLine,
                       ProposalStatus, MatchProposal, TxnStatus, User, utcnow, DEFAULT_LEDGERS, DEFAULT_ENTITY_CONFIG)
 from ..fx import MissingRate, need_rate, to_base
+from ..matching.tds import split_components
 from ..storage import StorageError, get_store
 from . import mapped
 from .connectors import REGISTRY
@@ -75,8 +76,11 @@ def journal_for_proposal(db: Session, entity: LegalEntity, p: MatchProposal) -> 
         inv: Invoice = a.invoice
         cust = db.get(Customer, inv.customer_id)
         icur, irate = inv.currency, inv.booking_rate_micro or 1_000_000
-        if a.tds_minor:
-            add("tds_receivable", _ledger(entity, "tds_receivable"), dr=a.tds_minor, inv=inv, currency=icur, rate=irate, narration=f"TDS {a.tds_section or ''} on {inv.number}".strip())
+        for kind, section, _rate, amt in (split_components(a.tds_section, a.tds_rate_bp, a.tds_minor) if a.tds_minor else []):
+            if kind == "gst":   # GST-TDS is credited to the GST electronic cash ledger, not claimed through Form 16A / 26AS
+                add("gst_tds_receivable", _ledger(entity, "gst_tds_receivable"), dr=amt, inv=inv, currency=icur, rate=irate, narration=f"GST-TDS on {inv.number}")
+            else:
+                add("tds_receivable", _ledger(entity, "tds_receivable"), dr=amt, inv=inv, currency=icur, rate=irate, narration=f"TDS {section or ''} on {inv.number}".strip())
         cleared = a.applied_minor + a.tds_minor + a.writeoff_minor
         add("ar_clearance", cust.ar_ledger or ar_default, cr=cleared if cleared > 0 else 0, dr=-cleared if cleared < 0 else 0, inv=inv, cust=inv.customer_id,
             currency=icur, rate=irate, narration=f"Against {inv.number}")

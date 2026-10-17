@@ -25,7 +25,7 @@ def tables(e):
 
 
 def test_fresh_database_upgrades_to_exactly_the_models(eng):
-    assert migrate.upgrade(eng) == migrate.head() == "0003"
+    assert migrate.upgrade(eng) == migrate.head() == "0006"
     assert tables(eng) == set(Base.metadata.tables) | {"alembic_version"}
     assert migrate.drift(eng) == [], "CI GUARD: a model changed without a migration. Run `python -m app.cli create-migration \"msg\"` and review it."
 
@@ -79,13 +79,22 @@ def test_legacy_database_from_an_older_release_is_stamped_at_its_own_revision_th
     with eng.begin() as c:
         c.execute(text("alter table posting_batches drop column export_key"))
     assert migrate.adoptable_revision(eng) == ("0001", [])
-    assert migrate.upgrade(eng) == "0003"
+    assert migrate.upgrade(eng) == HEAD
     assert "export_key" in {c["name"] for c in inspect(eng).get_columns("posting_batches")}
     assert "customer_trust" in tables(eng)
 
 
+HEAD = "0006"
+
+
 def _strip_0003(eng):
+    """Make a create_all() database look like it predates 0003 (drop everything 0003 to 0006 added)."""
     with eng.begin() as c:
+        c.execute(text("drop table gst_documents"))
+        c.execute(text("drop table form26as_entries"))
+        c.execute(text("drop index ix_customers_tan"))
+        c.execute(text("alter table customers drop column tan"))
+        c.execute(text("alter table tds_entries drop column kind"))
         for t in ("advance_applications", "on_account_balances", "customer_trust"):
             c.execute(text(f"drop table {t}"))
         c.execute(text("alter table match_proposals drop column shadow_confidence"))
@@ -97,7 +106,22 @@ def test_legacy_database_at_0002_is_stamped_there_and_upgraded_to_head(eng):
     Base.metadata.create_all(eng)
     _strip_0003(eng)
     assert migrate.adoptable_revision(eng) == ("0002", [])
-    assert migrate.upgrade(eng) == "0003"
+    assert migrate.upgrade(eng) == HEAD
+
+
+def test_0004_and_0005_add_their_objects_and_downgrade_cleanly(eng):
+    migrate.upgrade(eng, "0003")
+    assert "kind" not in {c["name"] for c in inspect(eng).get_columns("tds_entries")}
+    migrate.upgrade(eng, "0004")
+    migrate.upgrade(eng)
+    assert "form26as_entries" in tables(eng) and "tan" in {c["name"] for c in inspect(eng).get_columns("customers")}
+    migrate.downgrade(eng, "0004")
+    assert "form26as_entries" not in tables(eng) and "tan" not in {c["name"] for c in inspect(eng).get_columns("customers")}
+    migrate.upgrade(eng)
+    col = next(c for c in inspect(eng).get_columns("tds_entries") if c["name"] == "kind")
+    assert "income_tax" in str(col["default"]) and col["nullable"] is False, "existing rows must read as income-tax TDS"
+    migrate.downgrade(eng, "0003")
+    assert "kind" not in {c["name"] for c in inspect(eng).get_columns("tds_entries")}
 
 
 def test_0002_to_0003_keeps_existing_models_and_defaults_shadow_off_and_downgrades(eng):
@@ -113,7 +137,7 @@ def test_0002_to_0003_keeps_existing_models_and_defaults_shadow_off_and_downgrad
 
 def test_legacy_database_that_already_has_the_latest_columns_is_stamped_at_head(eng):
     Base.metadata.create_all(eng)
-    assert migrate.adoptable_revision(eng) == ("0003", [])
+    assert migrate.adoptable_revision(eng) == (HEAD, [])
 
 
 def test_legacy_database_that_does_not_match_the_baseline_is_refused_untouched(eng):

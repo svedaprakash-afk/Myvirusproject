@@ -34,6 +34,7 @@ class Ctx:
     reserved: dict[int, set[int]] = field(default_factory=lambda: defaultdict(set))  # invoice_id -> txn_ids pending
     other_entity_names: dict[int, str] = field(default_factory=dict)
     trust: dict[int, CustomerTrust] = field(default_factory=dict)
+    cum_before: dict[int, int] = field(default_factory=dict)     # invoice_id -> taxable value invoiced earlier in the same FY (194Q customers only)
     shadow_weights: dict | None = None
     shadow_version: str | None = None
 
@@ -97,6 +98,16 @@ def build_ctx(db: Session, entity: LegalEntity) -> Ctx:
                                                     MatchProposal.status == ProposalStatus.pending_review)).scalars():
         for a in p.allocations:
             ctx.reserved[a.invoice_id].add(p.txn_id)
+    from collections import defaultdict as _dd
+
+    from ..indian import financial_year
+
+    run: dict[tuple[int, str], int] = _dd(int)
+    for inv in sorted((i for i in invs if i.doc_type != "credit_note" and i.total_minor > 0 and customers.get(i.customer_id)
+                       and customers[i.customer_id].tds_section == "194Q"), key=lambda i: (i.invoice_date, i.id)):
+        k = (inv.customer_id, financial_year(inv.invoice_date)[0])
+        ctx.cum_before[inv.id] = run[k]
+        run[k] += inv.taxable_minor
     ctx.trust = {t.customer_id: t for t in db.execute(select(CustomerTrust).where(CustomerTrust.entity_id == entity.id)).scalars()}
     sm = shadow_model(db)
     if sm:

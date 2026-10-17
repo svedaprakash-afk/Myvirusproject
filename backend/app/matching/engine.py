@@ -26,7 +26,7 @@ from .references import find_references, strip_ids
 from . import advances, trust
 from .scoring import contributions, predict
 from .subset import find_subsets
-from .tds import TdsScenario, scenarios_for, tds_on
+from .tds import TdsScenario, scenarios_for, tds_on as _tds_on
 
 REF_STRONG = {"exact", "irn", "remittance"}
 
@@ -114,8 +114,8 @@ def allocate_set(ctx: Ctx, cust: Customer | None, invs: list[Invoice], pay: int,
     elif diff < 0:
         best = None
         if cust and domestic:
-            for sc in scenarios_for(cust):
-                tds_list = [tds_on(a.invoice, sc) for a in allocs]
+            for sc in scenarios_for(cust, ctx.cfg):
+                tds_list = [tds_on(ctx, a.invoice, sc) for a in allocs]
                 T = sum(tds_list)
                 if T <= 0:
                     continue
@@ -213,6 +213,10 @@ def base_feats(ctx: Ctx, txn: PaymentTransaction, cust: Customer | None, guess: 
     return f
 
 
+def tds_on(ctx: Ctx, inv: Invoice, sc: TdsScenario) -> int:
+    return _tds_on(inv, sc, cum_before=ctx.cum_before.get(inv.id, 0))
+
+
 def finish(ctx: Ctx, c: Cand) -> Cand:
     c.feats["ambiguity"] = min(1.0, 0.5 * c.n_competitors)
     c.prob = predict(ctx.weights, c.feats)
@@ -297,8 +301,8 @@ def amount_candidates(ctx: Ctx, txn, cust: Customer, guess: Guess) -> list[Cand]
     seen: set[frozenset[int]] = set()
     cfg_max = int(ctx.cfg.get("max_subset_size", 8))
     pool = pool[:40]
-    for sc in [None, *scenarios_for(cust)]:
-        vals = [(i.id, i.open_minor - (tds_on(i, sc) if sc else 0)) for i in pool]
+    for sc in [None, *scenarios_for(cust, ctx.cfg)]:
+        vals = [(i.id, i.open_minor - (tds_on(ctx, i, sc) if sc else 0)) for i in pool]
         size = cfg_max if (sc is None or sc.usual) else min(cfg_max, 3)   # exotic TDS rates only for small sets
         t_tol = tol if sc is None else min(tol, 50 * size + 50)
         for keys, _ in find_subsets(vals, pay, t_tol, max_size=size):
