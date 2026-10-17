@@ -4,14 +4,14 @@ from __future__ import annotations
 import hashlib
 import os
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import audit
 from ..config import settings
-from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PostingBatch, PostingLine,
+from ..models import (Adjustment, BatchStatus, Customer, Invoice, LegalEntity, PaymentTransaction, PeriodLock, PostingBatch, PostingLine,
                       ProposalStatus, MatchProposal, TxnStatus, User, utcnow, DEFAULT_LEDGERS, DEFAULT_ENTITY_CONFIG)
 from ..fx import MissingRate, need_rate, to_base
 from ..matching.tds import split_components
@@ -28,6 +28,17 @@ def _ledger(entity: LegalEntity, key: str) -> str:
     return (entity.ledgers or {}).get(key) or DEFAULT_LEDGERS[key]
 
 
+def effective_date(db: Session, entity: LegalEntity, d: date) -> tuple[date, bool]:
+    """Posting date after applying the period lock. Returns (date, was_redated); the policy 'block' raises instead of re-dating."""
+    lock = db.get(PeriodLock, entity.id)
+    if not lock or d > lock.locked_through:
+        return d, False
+    cfg = {**DEFAULT_ENTITY_CONFIG, **(entity.config or {})}
+    if cfg.get("period_lock_policy") == "block":
+        raise PostingError(f"Books are closed through {lock.locked_through:%d %b %Y}; an item dated {d:%d %b %Y} cannot be posted (policy: block)")
+    return lock.locked_through + timedelta(days=1), True
+
+
 def voucher_for(txn: PaymentTransaction) -> str:
     return f"CA-{txn.entity_id}-{txn.txn_date:%y%m%d}-{txn.id}"
 
@@ -41,10 +52,13 @@ def journal_for_proposal(db: Session, entity: LegalEntity, p: MatchProposal) -> 
     base = entity.base_currency
     txn = db.get(PaymentTransaction, p.txn_id)
     bank = txn.bank_account
-    vno, d, ccy = voucher_for(txn), txn.value_date or txn.txn_date, txn.currency
-    nar = f"Receipt {txn.utr or txn.bank_ref or txn.id} {txn.payer_name or ''}".strip()[:290]
+    orig_d = txn.value_date or txn.txn_date
+    vno, ccy = voucher_for(txn), txn.currency
+    d, redated = effective_date(db, entity, orig_d)
+    nar = f"Receipt {txn.utr or txn.bank_ref or txn.id} {txn.payer_name or ''}".strip()
+    nar = (nar + f" [receipt dated {orig_d:%d-%b-%Y}, period closed]" if redated else nar)[:290]
     try:
-        txn_rate = txn.fx_rate_micro or need_rate(db, ccy, d, base)
+        txn_rate = txn.fx_rate_micro or need_rate(db, ccy, orig_d, base)   # the rate of the day the cash arrived, not the (re-dated) posting day
     except MissingRate as e:
         raise PostingError(str(e))
     L: list[PostingLine] = []
@@ -115,6 +129,8 @@ def journal_for_proposal(db: Session, entity: LegalEntity, p: MatchProposal) -> 
 
 def journal_for_adjustment(db: Session, adj: Adjustment) -> list[PostingLine]:
     entity = db.get(LegalEntity, adj.entity_id)
+    post_date, redated = effective_date(db, entity, adj.posting_date)
+    reason = (adj.reason + f" [dated {adj.posting_date:%d-%b-%Y}, period closed]" if redated else adj.reason)[:290]
     cust = db.get(Customer, adj.customer_id) if adj.customer_id else None
     inv = db.get(Invoice, adj.invoice_id) if adj.invoice_id else None
     vno = f"ADJ-{adj.entity_id}-{adj.posting_date:%y%m%d}-{adj.id}"
@@ -130,7 +146,7 @@ def journal_for_adjustment(db: Session, adj: Adjustment) -> list[PostingLine]:
         b = adj.amount_minor if adj.currency == base else to_base(adj.amount_minor, rate)
         pl = PostingLine(voucher_no=vno, txn_id=adj.txn_id, adjustment_id=adj.id, invoice_id=adj.invoice_id, customer_id=adj.customer_id, line_type=t,
                          account=acct, debit_minor=dr, credit_minor=cr, currency=adj.currency, base_debit_minor=b if dr else 0, base_credit_minor=b if cr else 0,
-                         rate_micro=None if adj.currency == base else rate, posting_date=adj.posting_date, narration=adj.reason[:290])
+                         rate_micro=None if adj.currency == base else rate, posting_date=post_date, narration=reason)
         pl._inv, pl._party = (inv.number if inv else None), (cust.code if cust else None)  # type: ignore[attr-defined]
         out.append(pl)
     return out

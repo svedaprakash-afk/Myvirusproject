@@ -141,6 +141,7 @@ DEFAULT_ENTITY_CONFIG = {
     "tds_194q_rate_bp": 10,
     "e_invoice_required": False,      # e-invoicing applies above the aggregate-turnover threshold in force: set per entity
     "gstr1_frequency": "monthly",     # monthly | quarterly (QRMP)
+    "period_lock_policy": "redate",   # redate: late items in a closed period post on the first open day | block: refuse the batch
 }
 DEFAULT_LEDGERS = {
     "ar_control": "1200-AR",
@@ -643,6 +644,16 @@ class GstDocument(Base):
     period: Mapped[str | None] = mapped_column(String(6))           # GSTR-1 filing period MMYYYY
     imported_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     __table_args__ = (UniqueConstraint("entity_id", "source", "doc_type", "doc_no_norm"),)
+
+
+class PeriodLock(Base):
+    """Books are closed through `locked_through`. Journals dated on or before it are re-dated to the first open day (or refused, per policy)."""
+    __tablename__ = "period_locks"
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), primary_key=True)
+    locked_through: Mapped[date] = mapped_column(Date)
+    locked_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    locked_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    note: Mapped[str] = mapped_column(String(300), default="")
 
 
 # ---------------------------------------------------------------- posting

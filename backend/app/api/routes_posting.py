@@ -3,17 +3,18 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import analytics, audit
+from .. import analytics, audit, evidence
 from ..config import settings
 from ..db import get_db
 from ..matching import monitoring, scoring
-from ..models import AuditLog, MatchFeedback, MatchProposal, PostingBatch, ProposalStatus, ScoringModel, User
+from ..models import utcnow, AuditLog, PeriodLock, MatchFeedback, MatchProposal, PostingBatch, ProposalStatus, ScoringModel, User
 from ..posting import service as posting
 from ..security import require
 from . import serializers as S
@@ -189,6 +190,62 @@ def audit_export(entity_id: int | None = None, user: User = Depends(require("aud
         w.writerow([a.seq, a.ts.isoformat(), a.actor, a.action, a.object_type, a.object_id, a.entity_id, json.dumps(a.detail, sort_keys=True), a.prev_hash, a.hash])
     audit.log(db, user.name, "audit.exported", "AuditLog", "-", entity_id, {}, user.id)
     return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="audit_log.csv"'})
+
+
+@router.get("/audit/evidence-pack")
+def evidence_pack(entity_id: int, date_from: date | None = None, date_to: date | None = None, user: User = Depends(require("audit")), db: Session = Depends(get_db)):
+    e = entity_for(db, user, entity_id)
+    end = date_to or date.today()
+    start = date_from or (end - timedelta(days=90))
+    if start > end:
+        raise HTTPException(400, "date_from is after date_to")
+    if (end - start).days > 800:
+        raise HTTPException(400, "Choose a range of at most about two years")
+    import hashlib
+
+    blob, manifest = evidence.build(db, e, start, end, user)
+    audit.log(db, user.name, "evidence.exported", "LegalEntity", e.id, e.id, {"from": str(start), "to": str(end), "sha256": hashlib.sha256(blob).hexdigest(),
+                                                                                "chain_ok": manifest["audit_chain"]["ok"]}, user.id)
+    return Response(blob, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="evidence_{e.id}_{start}_{end}.zip"'})
+
+
+# ---------------------------------------------------------------------------------------------- period lock
+@router.get("/periods/lock")
+def get_lock(entity_id: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    entity_for(db, user, entity_id)
+    lk = db.get(PeriodLock, entity_id)
+    return {"locked_through": S.d(lk.locked_through) if lk else None, "note": lk.note if lk else "", "locked_at": S.d(lk.locked_at) if lk else None,
+            "locked_by": lk.locked_by if lk else None}
+
+
+class LockIn(BaseModel):
+    entity_id: int
+    locked_through: date | None = None      # None removes the lock
+    note: str = Field("", max_length=300)
+
+
+@router.post("/periods/lock")
+def set_lock(body: LockIn, user: User = Depends(require("configure")), db: Session = Depends(get_db)):
+    """Close the books through a date. Closing needs no reason; moving the lock earlier or removing it (re-opening) needs one and is audited."""
+    entity_for(db, user, body.entity_id)
+    lk = db.get(PeriodLock, body.entity_id)
+    new = body.locked_through
+    if new and new > date.today():
+        raise HTTPException(422, "A period cannot be closed in the future")
+    reopening = lk is not None and (new is None or new < lk.locked_through)
+    if reopening and len(body.note.strip()) < 5:
+        raise HTTPException(422, "Give a reason (at least 5 characters) to re-open a closed period")
+    before = lk.locked_through.isoformat() if lk else None
+    if new is None:
+        if lk:
+            db.delete(lk)
+    elif lk:
+        lk.locked_through, lk.locked_by, lk.locked_at, lk.note = new, user.id, utcnow(), body.note
+    else:
+        db.add(PeriodLock(entity_id=body.entity_id, locked_through=new, locked_by=user.id, note=body.note))
+    audit.log(db, user.name, "period.reopened" if reopening else "period.locked", "LegalEntity", body.entity_id, body.entity_id,
+              {"before": before, "after": new.isoformat() if new else None, "note": body.note}, user.id)
+    return {"locked_through": new.isoformat() if new else None}
 
 
 # ---------------------------------------------------------------------------------------------- scoring models
