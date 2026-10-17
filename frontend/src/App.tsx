@@ -90,8 +90,21 @@ function Shell() {
   );
 }
 
+/** The identity provider sends the browser back to /#sso_token=… or /#sso_error=…; the fragment never reaches a server or its logs. */
+function takeSsoFragment(): { token?: string; error?: string } {
+  const m = window.location.hash.match(/^#sso_(token|error)=(.*)$/);
+  if (!m) return {};
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  const v = decodeURIComponent(m[2]);
+  return m[1] === "token" ? { token: v } : { error: v };
+}
+
+const SSO_RESULT = takeSsoFragment();     // once, at load: React StrictMode runs component initialisers twice, which would swallow the one-shot fragment
+if (SSO_RESULT.token) setToken(SSO_RESULT.token);
+
 export default function App() {
   const nav = useNavigate();
+  const sso = SSO_RESULT;
   const [boot, setBoot] = useState<{ user: User; entities: Entity[] } | null>(null);
   const [loading, setLoading] = useState(hasToken());
   useEffect(() => { setUnauthorizedHandler(() => { setBoot(null); nav("/login"); }); }, [nav]);
@@ -100,6 +113,6 @@ export default function App() {
     Promise.all([api.get<User>("/auth/me"), api.get<Entity[]>("/entities")]).then(([user, entities]) => setBoot({ user, entities })).catch(() => setToken(null)).finally(() => setLoading(false));
   }, []);
   if (loading) return <Loading rows={6} />;
-  if (!boot) return <Routes><Route path="*" element={<Login onLogin={(user, entities) => { setBoot({ user, entities }); nav("/"); }} />} /></Routes>;
+  if (!boot) return <Routes><Route path="*" element={<Login ssoError={sso.error} onLogin={(user, entities) => { setBoot({ user, entities }); nav("/"); }} />} /></Routes>;
   return <AppProvider user={boot.user} entities={boot.entities}><Shell /></AppProvider>;
 }

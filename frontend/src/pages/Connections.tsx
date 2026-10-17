@@ -35,6 +35,7 @@ const PROFILE_TEMPLATES: Record<string, object> = {
 const FEED_TEMPLATES: Record<string, object> = {
   "None (manual upload)": {},
   "Folder drop (SFTP landing zone)": { type: "folder_drop", path: "hdfc", pattern: "*.csv", archive: true },
+  "SFTP host-to-host (pinned host key)": { type: "sftp_native", host: "sftp.yourbank.example", port: 22, username: "corp-user", remote_dir: "/outbound", pattern: "*.sta", archive_dir: "/outbound/processed", host_key_sha256: "SHA256:<fingerprint from your bank>", auth: { password_env: "BANK_SFTP_PASSWORD" } },
   "Generic REST/JSON API": { type: "rest_json", url: "https://api.yourbank.example/v1/statements", auth: { token_env: "BANK_API_TOKEN" }, params: { from: "{since}" }, records_path: "data.transactions", date_format: "%Y-%m-%d", lookback_days: 7, credit_values: ["CR"], map: { date: "txnDate", amount: "amount", direction: "type", narration: "remarks", ref: "utr", balance: "balance" } },
 };
 
@@ -232,7 +233,8 @@ function StorageCard() {
         {s.backend === "s3" ? <>
           <tr><td className="muted">Bucket</td><td className="mono">{s.bucket}/{s.prefix}</td></tr>
           <tr><td className="muted">Region / endpoint</td><td>{s.region ?? "—"} {s.endpoint_host && <span className="muted">· {s.endpoint_host}</span>}</td></tr>
-          <tr><td className="muted">Encryption</td><td>{s.encryption}{s.kms_key && <Chip tone="good">KMS key set</Chip>}</td></tr></> : <>
+          <tr><td className="muted">Encryption</td><td>{s.encryption}{s.kms_key && <Chip tone="good">KMS key set</Chip>}</td></tr>
+          <tr><td className="muted">Export retention</td><td>{s.object_lock ? <><Chip tone={s.object_lock.enabled === false ? "bad" : "good"}>{s.object_lock.mode}</Chip> <span className="muted">{s.object_lock.retention_days} days{s.object_lock.enabled === false ? " — the bucket does not have Object Lock enabled, so exports will be refused" : ""}</span></> : <span className="muted">none (set S3_OBJECT_LOCK_MODE and S3_RETENTION_DAYS for write-once exports)</span>}</td></tr></> : <>
           <tr><td className="muted">Exports directory</td><td className="mono">{s.exports_dir}</td></tr><tr><td className="muted">Landing zone</td><td className="mono">{s.feeds_dir}</td></tr></>}
       </tbody></table>
       {s.problems.map((p: string, i: number) => <div key={i} className="note bad">{p}</div>)}

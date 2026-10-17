@@ -355,7 +355,8 @@ def storage_status(user: User = Depends(require("view"))):
     out = {"backend": cfg.storage_backend, "problems": errs, "strict": cfg.residency_strict}
     if cfg.storage_backend == "s3":
         out |= {"bucket": cfg.s3_bucket, "prefix": cfg.s3_prefix, "region": cfg.s3_region or None, "endpoint_host": storage.s3_host(cfg) if cfg.s3_bucket else None,
-                "encryption": cfg.s3_sse or "not declared", "kms_key": bool(cfg.s3_kms_key_id)}
+                "encryption": cfg.s3_sse or "not declared", "kms_key": bool(cfg.s3_kms_key_id),
+                **({"object_lock": {"mode": cfg.s3_object_lock_mode, "retention_days": cfg.s3_retention_days}} if cfg.s3_object_lock_mode else {})}
     else:
         out |= {"exports_dir": cfg.export_dir, "feeds_dir": cfg.feed_root}
     return out

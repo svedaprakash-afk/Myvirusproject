@@ -4,12 +4,13 @@ import { useApp } from "../ctx";
 import { useAction, useAsync } from "../hooks";
 import { date, money, pct, toMinor } from "../format";
 import { Chip, ErrorBox, Field, Loading, PageHead, Tabs } from "../components/ui";
+import Operations from "./Operations";
 
 const DEFAULT_PROV = [{ from_days: 0, pct_bp: 50 }, { from_days: 31, pct_bp: 200 }, { from_days: 61, pct_bp: 500 }, { from_days: 91, pct_bp: 1500 }, { from_days: 181, pct_bp: 4000 }, { from_days: 366, pct_bp: 10000 }];
 
 export default function Settings() {
-  const [tab, setTab] = useState<"controls" | "ai">("controls");
-  return (<><PageHead title="Settings & AI" sub="Matching thresholds, control switches and the scoring model lifecycle." /><Tabs value={tab} onChange={setTab} tabs={[["controls", "Controls"], ["ai", "AI model lifecycle"]]} />{tab === "controls" ? <Controls /> : <Models />}</>);
+  const [tab, setTab] = useState<"controls" | "ops" | "ai">("controls");
+  return (<><PageHead title="Settings & AI" sub="Matching thresholds, control switches and the scoring model lifecycle." /><Tabs value={tab} onChange={setTab} tabs={[["controls", "Controls"], ["ops", "Operations"], ["ai", "AI model lifecycle"]]} />{tab === "controls" ? <Controls /> : tab === "ops" ? <Operations /> : <Models />}</>);
 }
 
 function provValid(rows: { d: string; p: string }[]): boolean {

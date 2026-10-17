@@ -36,6 +36,10 @@ ERP open items into matched, audit-ready cash postings, with exceptions, maker-c
 - **Close the loop**: balanced canonical journals -> pluggable ERP connectors (generic CSV, canonical JSON) -> acknowledgement.
 - **Learn**: analyst accept/reject/reverse feed a retrainable model; candidates are never self-activating; rollback in one click.
 - **TDS tracker**, DSO/ageing/unapplied-cash dashboards, collections projection.
+- **Added since**: per-customer straight-through trust, model health and shadow testing, on-account/advance application, scanned-remittance OCR with
+  reconciliation checks, 194Q threshold and GST-TDS split, TDS register with Form 16A dates, Form 26AS/AIS reconciliation, GST filing checks,
+  ageing and provision, period close, auditor evidence pack, alerts (email/Slack/Teams), OpenID Connect sign-in and SCIM, Tally/SAP/Business Central/NetSuite
+  renderers, ERP confirmation files, SFTP host-to-host, S3 Object Lock. **Read `docs/ENTERPRISE_AND_COMPLIANCE.md` for what each does and what is unproven.**
 
 ## Run it
 ```bash
@@ -57,15 +61,15 @@ React/TypeScript UI in `frontend/`. Money is integer paise end to end.
 ## Honest limits
 - **Accuracy is unproven on real data** — see `docs/EVALUATION.md`. Start in suggest-only mode.
 - **No bank-specific or ERP-specific connector has been tested against a real system.** The generic mechanisms (folder drop, REST/JSON,
-  mapped CSV, signed webhook, IMAP) are tested with fakes/temp files only. Native SFTP polling and bank-specific APIs are *planned* and refuse
-  to run; Tally/Zoho/Business Central/SAP have no dedicated adapters (use mapped CSV or the webhook). e-invoice portal and GST/TRACES/26AS
-  integrations are not built.
+  mapped CSV, signed webhook, IMAP) are tested with fakes/temp files only. The Tally/SAP/Business Central/NetSuite renderers, the 26AS/AIS and
+  GSTR-1/e-invoice readers were written from published formats and have never met a real system or a real download. Bank-specific APIs and
+  Account Aggregator are not built; Zoho Books is planned and refuses to run. Native SFTP polling is tested against a real SFTP server.
 - **Multi-currency scope**: all arithmetic uses 1/100 of the unit, so JPY works but is carried as 1/100 yen (no fractional-yen semantics) and 3-decimal currencies (KWD, BHD) are unsupported; the six non-FBIL top-10 rates are *derived* (indicative, not official); rates come from the FBIL feed/import or manual entry; realised FX is
   computed from booking vs settlement rates. Cross-currency matches auto-approve (default ON) only when the payer stated the foreign amount; estimates never do. Manual cross-currency allocation is refused. No unrealised-FX revaluation.
 - **Data residency is only partly enforceable in software** — see `docs/DEPLOYMENT_INDIA.md`.
 - Statutory TDS rates are **defaults for matching hints**, configurable per customer; confirm with your tax team.
-- Not built: SSO/MFA, Azure Blob (not S3-compatible) storage backend, field-level encryption at rest, background job queue, multi-currency FX revaluation,
-  customer portal, email-inbox connector, reversal of already-posted receipts, rate limiting. 
+- Not built: SAML, MFA, Azure Blob (not S3-compatible) storage backend, field-level encryption at rest, background job queue, multi-currency FX revaluation,
+  customer portal, reversal of already-posted receipts, rate limiting. 
 - The optional LLM remittance extractor (set `ANTHROPIC_API_KEY`) redacts PII and validates output against the source text, but has
   only been tested with a fake transport, not the live API. Matching never depends on it.
 - Seed data and the evaluation harness are synthetic.

@@ -21,5 +21,17 @@ data:
   S3_KMS_KEY_ID: ""                   # required with aws:kms in strict mode: a key created IN the Indian region
   S3_ENDPOINT_URL: ""                 # for non-AWS S3 APIs (Oracle, Ceph, MinIO, GCS interop); then also set S3_PATH_STYLE if required
   S3_PATH_STYLE: "0"
+  # Write-once retention on posting exports. The bucket must have been created with Object Lock enabled (it cannot be switched on later).
+  # COMPLIANCE retention cannot be shortened or removed by anyone, including the account owner: choose the period with your auditor.
+  S3_OBJECT_LOCK_MODE: ""             # GOVERNANCE | COMPLIANCE | empty = off
+  S3_RETENTION_DAYS: "0"
+  # Single sign-on (OpenID Connect) and SCIM. Non-secret values here; SSO_CLIENT_SECRET and SCIM_TOKEN go in the cashapp-secrets Secret.
+  SSO_ISSUER: ""                      # e.g. https://login.microsoftonline.com/<tenant>/v2.0 (add the host to ALLOWED_EGRESS_HOSTS)
+  SSO_CLIENT_ID: ""
+  SSO_REDIRECT_URI: ""                # https://cash.corp.example.in/api/v1/auth/sso/callback
+  SSO_ROLE_MAP: ""                    # JSON, first match wins: {"<group id or name>": "ar_manager"}
+  SSO_JIT_ROLE: ""                    # empty = people must be provisioned (SCIM or by an admin) before they can sign in
+  SSO_ENFORCE: "0"                    # 1 = password sign-in off except the admin break-glass role
+  SCIM_ALLOWED_ROLES: "ar_analyst,ar_manager,treasury,auditor"
   # Credentials: use the pod's cloud identity (IRSA / workload identity / instance role). Do NOT put keys in this file.
   CORS_ORIGINS: "https://cash.corp.example.in"
