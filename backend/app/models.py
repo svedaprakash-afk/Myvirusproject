@@ -141,6 +141,7 @@ DEFAULT_ENTITY_CONFIG = {
     "tds_194q_rate_bp": 10,
     "e_invoice_required": False,      # e-invoicing applies above the aggregate-turnover threshold in force: set per entity
     "gstr1_frequency": "monthly",     # monthly | quarterly (QRMP)
+    "erp_confirm_hours": 24,          # an exported batch the ERP has not confirmed after this long raises an alert
     "period_lock_policy": "redate",   # redate: late items in a closed period post on the first open day | block: refuse the batch
 }
 DEFAULT_LEDGERS = {

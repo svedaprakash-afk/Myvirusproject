@@ -126,13 +126,19 @@ def resolve(entity: LegalEntity, name: str, transport: Callable | None = None):
         return MappedCsvConnector(cfg)
     if name == "webhook" and cfg.get("type") == "webhook" and not validate_export(cfg):
         return WebhookConnector(cfg, transport)
-    return REGISTRY.get(name)
+    c = REGISTRY.get(name)
+    if c is not None and hasattr(c, "with_options"):
+        return c.with_options(((entity.config or {}).get("integrations") or {}).get("erp_options", {}).get(name))
+    return c
 
 
 def available(entity: LegalEntity) -> list[dict]:
     from .connectors import REGISTRY
 
-    out = [{"name": c.name, "label": c.label, "status": c.status} for c in REGISTRY.values()]
+    opts = ((entity.config or {}).get("integrations") or {}).get("erp_options") or {}
+    out = [{"name": c.name, "label": c.label, "status": ("available" if not hasattr(c, "required") or not c.validate(opts.get(c.name) or {}) else "needs options"),
+            **({"unverified": True} if getattr(c, "unverified", False) else {})} if c.status == "available" else {"name": c.name, "label": c.label, "status": c.status}
+           for c in REGISTRY.values()]
     cfg = ((entity.config or {}).get("integrations") or {}).get("erp_export") or {}
     for t, label in (("mapped_csv", MappedCsvConnector.label), ("webhook", WebhookConnector.label)):
         out.append({"name": t, "label": label, "status": "available" if cfg.get("type") == t and not validate_export(cfg) else "not configured"})

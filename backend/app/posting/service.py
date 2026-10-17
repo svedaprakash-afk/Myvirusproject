@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -73,7 +75,8 @@ def journal_for_proposal(db: Session, entity: LegalEntity, p: MatchProposal) -> 
                          base_debit_minor=dr if currency == base else to_base(dr, rate), base_credit_minor=cr if currency == base else to_base(cr, rate),
                          rate_micro=None if currency == base else rate, posting_date=d, narration=narration)
         pl._inv = inv.number if inv else None  # type: ignore[attr-defined]
-        pl._party = db.get(Customer, pl.customer_id).code if pl.customer_id else None  # type: ignore[attr-defined]
+        _c = db.get(Customer, pl.customer_id) if pl.customer_id else None
+        pl._party, pl._party_name = (_c.code if _c else None), (_c.name if _c else None)  # type: ignore[attr-defined]
         L.append(pl)
 
     add("bank_receipt", bank.ledger_code, dr=txn.amount_minor)
@@ -209,8 +212,15 @@ def export_batch(db: Session, batch: PostingBatch, connector: str, user: User, t
         raise PostingError(f"Unknown or unconfigured connector '{connector}'")
     if c.status != "available":
         raise PostingError(f"Connector '{c.label}' is planned but not implemented yet")
+    if hasattr(c, "validate"):
+        bad = c.validate(c.options)
+        if bad:
+            raise PostingError(f"Connector '{c.label}' needs settings first: {'; '.join(bad)} (Connections > ERP export)")
     _attach_refs(db, batch)
-    r = c.render(batch, entity)
+    try:
+        r = c.render(batch, entity)
+    except ValueError as e:
+        raise PostingError(str(e))
     checksum = hashlib.sha256(r.content).hexdigest()
     key = f"{batch.entity_id}/{batch.id}/{r.filename}"
     try:                      # store FIRST: a batch is only 'exported' if its file is durably stored and readable back
@@ -248,10 +258,11 @@ def download_stored(db: Session, batch: PostingBatch, user: User) -> tuple[str, 
 
 def _attach_refs(db: Session, batch: PostingBatch) -> None:
     for ln in batch.lines:
-        if not hasattr(ln, "_inv"):
+        if not hasattr(ln, "_inv") or not hasattr(ln, "_party_name"):
             inv = db.get(Invoice, ln.invoice_id) if ln.invoice_id else None
             cust = db.get(Customer, ln.customer_id) if ln.customer_id else None
             ln._inv, ln._party = (inv.number if inv else None), (cust.code if cust else None)  # type: ignore[attr-defined]
+            ln._party_name = cust.name if cust else None  # type: ignore[attr-defined]
 
 
 def acknowledge(db: Session, batch: PostingBatch, erp_docs: dict[str, str], user: User) -> None:
@@ -270,6 +281,52 @@ def acknowledge(db: Session, batch: PostingBatch, erp_docs: dict[str, str], user
         a.posted = True
     batch.status, batch.acked_at = BatchStatus.acknowledged, utcnow()
     audit.log(db, user.name, "batch.acknowledged", "PostingBatch", batch.id, batch.entity_id, {"vouchers": len(vouchers)}, user.id)
+
+
+def parse_confirmation(data: bytes) -> list[dict]:
+    """ERP posting confirmation: CSV with voucher_no and erp_doc_no (also accepts 'voucher', 'document_no' style headers), optional status and error."""
+    import csv
+
+    text = data.decode("utf-8-sig", errors="replace")
+    rd = csv.DictReader(io.StringIO(text))
+    norm = {h: re.sub(r"[^a-z]", "", h.lower()) for h in (rd.fieldnames or [])}
+    col = lambda *names: next((h for h, n in norm.items() if n in names), None)
+    v, d, st, er = col("voucherno", "voucher", "externalid", "reference"), col("erpdocno", "docno", "documentno", "erpdocument", "document"), col("status", "result"), col("error", "message", "errormessage")
+    if not v or not (d or st):
+        raise PostingError("The confirmation file needs a voucher_no column and an erp_doc_no (or status) column")
+    rows = []
+    for r in rd:
+        if not (r.get(v) or "").strip():
+            continue
+        status = (r.get(st) or "").strip().upper() if st else ""
+        ok = (status in ("", "OK", "SUCCESS", "POSTED", "S") and bool((r.get(d) or "").strip())) if d else status in ("OK", "SUCCESS", "POSTED", "S")
+        rows.append({"voucher_no": r[v].strip(), "erp_doc_no": (r.get(d) or "").strip() if d else "", "ok": ok, "error": (r.get(er) or "").strip() if er else ""})
+    if not rows:
+        raise PostingError("The confirmation file has no rows")
+    return rows
+
+
+def acknowledge_from_file(db: Session, batch: PostingBatch, data: bytes, user: User, fail_on_errors: bool = False) -> dict:
+    rows = parse_confirmation(data)
+    wanted = {ln.voucher_no for ln in batch.lines}
+    ok = {r["voucher_no"]: r["erp_doc_no"] for r in rows if r["ok"] and r["voucher_no"] in wanted}
+    bad = [r for r in rows if not r["ok"] and r["voucher_no"] in wanted]
+    unknown = sorted({r["voucher_no"] for r in rows} - wanted)
+    missing = sorted(wanted - set(ok) - {r["voucher_no"] for r in bad})
+    out = {"acknowledged": False, "confirmed": len(ok), "errors": [{"voucher_no": r["voucher_no"], "error": r["error"] or "marked as failed"} for r in bad], "missing": missing,
+           "unknown_in_file": unknown, "vouchers": len(wanted)}
+    if not bad and not missing and not unknown:
+        acknowledge(db, batch, ok, user)
+        out["acknowledged"] = True
+    elif bad and fail_on_errors:
+        fail_batch(db, batch, "ERP rejected: " + "; ".join(f"{r['voucher_no']}: {r['error'] or 'failed'}" for r in bad[:5]), user)
+        out["batch_failed"] = True
+    return out
+
+
+def unconfirmed(db: Session, entity_id: int, hours: int = 24) -> list[PostingBatch]:
+    return list(db.execute(select(PostingBatch).where(PostingBatch.entity_id == entity_id, PostingBatch.status == BatchStatus.exported,
+                                                      PostingBatch.exported_at < utcnow() - timedelta(hours=hours)).order_by(PostingBatch.exported_at)).scalars())
 
 
 def fail_batch(db: Session, batch: PostingBatch, error: str, user: User) -> None:

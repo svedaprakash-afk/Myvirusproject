@@ -1,25 +1,17 @@
 """ERP connector layer. The platform speaks ONE canonical journal; connectors only render it for a target ERP.
 
 Writing a new connector = implement `render()` (and optionally `parse_open_items`). Nothing in matching, workflow or
-posting changes. Shipped here: generic line-level CSV and canonical JSON. Tally/Zoho/Business Central/SAP are planned
-adapters — they are NOT implemented and are listed as such by the API rather than faked.
+posting changes. Shipped here: generic line-level CSV and canonical JSON.
 """
 from __future__ import annotations
 
 import csv
 import io
 import json
-from dataclasses import dataclass
 from typing import Protocol
 
 from ..models import LegalEntity, PostingBatch
-
-
-@dataclass
-class Rendered:
-    filename: str
-    content: bytes
-    content_type: str
+from .types import Rendered  # noqa: F401  (re-exported for existing importers)
 
 
 class ERPConnector(Protocol):
@@ -85,6 +77,14 @@ class PlannedConnector:
 
 REGISTRY: dict[str, ERPConnector] = {c.name: c for c in [
     GenericCsvConnector(), CanonicalJsonConnector(),
-    PlannedConnector("tally_prime", "Tally Prime (XML vouchers)"), PlannedConnector("zoho_books", "Zoho Books (REST)"),
-    PlannedConnector("d365_bc", "Dynamics 365 Business Central (OData)"), PlannedConnector("sap_s4", "SAP S/4HANA (BAPI/OData)"),
+    PlannedConnector("zoho_books", "Zoho Books (REST)"),
 ]}
+
+
+def _register_native() -> None:
+    from .erp_native import NATIVE
+
+    REGISTRY.update(NATIVE)
+
+
+_register_native()

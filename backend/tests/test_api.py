@@ -148,8 +148,10 @@ def test_config_validation_and_audit(client, seeded):
 
 
 def test_connectors_are_honest_about_what_exists(client, seeded):
-    c = {x["name"]: x["status"] for x in client.get("/api/v1/connectors", headers=H(client, "analyst")).json()}
-    assert c["generic_csv"] == "available" and c["tally_prime"] == "planned"
+    rows = {x["name"]: x for x in client.get("/api/v1/connectors", headers=H(client, "analyst")).json()}
+    assert rows["generic_csv"]["status"] == "available" and rows["zoho_books"]["status"] == "planned"
+    assert rows["tally_prime"]["status"] == "available" and rows["tally_prime"]["unverified"] is True, "built from the published format, never imported into a real ERP"
+    assert "unverified" not in rows["generic_csv"]
 
 
 def test_dashboard_converts_foreign_currency_and_flags_missing_rates(client, seeded, db):

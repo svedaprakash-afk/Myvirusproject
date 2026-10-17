@@ -5,7 +5,7 @@ import csv
 import io
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -99,6 +99,26 @@ def ack(bid: int, body: AckIn, user: User = Depends(require("release_batch", "bu
 
 class FailIn(BaseModel):
     error: str = Field(..., min_length=3)
+
+
+@router.post("/posting/batches/{bid}/ack-file")
+async def ack_file(bid: int, file: UploadFile = File(...), fail_on_errors: bool = Form(False), user: User = Depends(require("release_batch", "build_batch")),
+                   db: Session = Depends(get_db)):
+    b = get_or_404(db, PostingBatch, bid)
+    guard(user, b)
+    data = await file.read(5 * 1024 * 1024 + 1)
+    if len(data) > 5 * 1024 * 1024:
+        raise HTTPException(413, "File too large (5 MB limit)")
+    return _p(posting.acknowledge_from_file, db, b, data, user, fail_on_errors)
+
+
+@router.get("/posting/unconfirmed")
+def unconfirmed(entity_id: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    from ..models import DEFAULT_ENTITY_CONFIG
+
+    e = entity_for(db, user, entity_id)
+    hours = int({**DEFAULT_ENTITY_CONFIG, **(e.config or {})}.get("erp_confirm_hours", 24))
+    return {"hours": hours, "items": [S.batch(b) for b in posting.unconfirmed(db, entity_id, hours)]}
 
 
 @router.post("/posting/batches/{bid}/fail")

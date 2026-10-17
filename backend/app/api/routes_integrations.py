@@ -147,7 +147,7 @@ async def preview(bank_account_id: int = Form(...), profile_json: str = Form(Non
 def get_integrations(eid: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
     e = entity_for(db, user, eid)
     cfg = (e.config or {}).get("integrations") or {}
-    return {"erp_export": cfg.get("erp_export") or {}, "erp_import": cfg.get("erp_import") or {}, "mailbox": cfg.get("mailbox") or {},
+    return {"erp_export": cfg.get("erp_export") or {}, "erp_import": cfg.get("erp_import") or {}, "mailbox": cfg.get("mailbox") or {}, "erp_options": cfg.get("erp_options") or {},
             "connectors": mapped.available(e), "ledgers": e.ledgers, "base_currency": e.base_currency,
             "residency": {"strict": config.settings.residency_strict, "region": config.settings.deploy_region or None,
                           "allowed_egress": list(config.settings.allowed_egress), "indian_region": config.settings.deploy_region in INDIA_REGIONS}}
@@ -157,6 +157,7 @@ class IntegrationsIn(BaseModel):
     erp_export: dict | None = None
     erp_import: dict | None = None
     mailbox: dict | None = None
+    erp_options: dict | None = None
     ledgers: dict[str, str] | None = Field(None, description="logical ledger -> ERP ledger code")
 
 
@@ -172,6 +173,10 @@ def set_integrations(eid: int, body: IntegrationsIn, user: User = Depends(requir
         errs += mailbox.validate_mailbox(body.mailbox)
         if body.mailbox.get("host") and not egress_allowed(body.mailbox["host"]):
             errs.append("mailbox host is not in ALLOWED_EGRESS_HOSTS (data-residency strict mode)")
+    if body.erp_options is not None:
+        from ..posting import erp_native
+
+        errs += erp_native.validate_options(body.erp_options)
     if body.erp_import is not None and body.erp_import.get("columns") is not None:
         from ..ingestion.service import _COLS
 
@@ -179,7 +184,7 @@ def set_integrations(eid: int, body: IntegrationsIn, user: User = Depends(requir
     if errs:
         raise HTTPException(422, "; ".join(errs))
     cfg = dict((e.config or {}).get("integrations") or {})
-    for k in ("erp_export", "erp_import", "mailbox"):
+    for k in ("erp_export", "erp_import", "mailbox", "erp_options"):
         v = getattr(body, k)
         if v is not None:
             cfg[k] = v

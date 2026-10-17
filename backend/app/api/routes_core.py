@@ -52,7 +52,7 @@ def connectors(entity_id: int | None = None, user: User = Depends(require("view"
     from ..posting import mapped
 
     e = entity_for(db, user, entity_id) if entity_id else None
-    return mapped.available(e) if e else [{"name": c.name, "label": c.label, "status": c.status} for c in REGISTRY.values()]
+    return mapped.available(e) if e else [{"name": c.name, "label": c.label, "status": c.status, **({"unverified": True} if getattr(c, "unverified", False) else {})} for c in REGISTRY.values()]
 
 
 @router.get("/entities")
@@ -87,6 +87,7 @@ class ConfigIn(BaseModel):
     provision_disputed_bp: int | None = Field(None, ge=0, le=10000)
     tds_194q_threshold_minor: int | None = Field(None, ge=0)
     tds_194q_rate_bp: int | None = Field(None, ge=1, le=1000)
+    erp_confirm_hours: int | None = Field(None, ge=1, le=720)
     e_invoice_required: bool | None = None
     gstr1_frequency: str | None = Field(None, pattern="^(monthly|quarterly)$")
     auto_approve_threshold: float | None = Field(None, ge=0.5, le=0.999)
