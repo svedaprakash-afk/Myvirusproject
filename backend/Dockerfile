@@ -1,8 +1,10 @@
 FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 APP_ENV=prod ALLOW_DEMO=0
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Local OCR for scanned remittance advices: nothing leaves the container. Drop this line and requirements-ocr.txt for a smaller image (scans are then refused with a clear message).
+RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt requirements-ocr.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-ocr.txt
 COPY app app
 COPY alembic.ini .
 COPY migrations migrations

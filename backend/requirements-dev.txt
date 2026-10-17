@@ -2,3 +2,4 @@ pytest>=8
 pyyaml>=6
 moto[s3]>=5
 -r requirements.txt
+-r requirements-ocr.txt

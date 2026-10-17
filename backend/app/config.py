@@ -20,6 +20,8 @@ class Settings:
     # Optional LLM remittance extraction. Matching decisions never depend on it.
     anthropic_api_key: str | None = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY"))
     llm_model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "claude-haiku-5-5"))
+    # The LLM is consulted only when the local extractor's confidence is below this (rules are tried first, always).
+    llm_fallback_below: float = field(default_factory=lambda: float(os.getenv("LLM_FALLBACK_BELOW", "0.75")))
     # Data residency. In strict mode the process refuses to start outside an Indian region and refuses ANY outbound call
     # (LLM, webhooks, bank APIs, IMAP) to a host that is not explicitly allow-listed as in-region.
     residency_strict: bool = field(default_factory=lambda: os.getenv("DATA_RESIDENCY_STRICT", "0") == "1")

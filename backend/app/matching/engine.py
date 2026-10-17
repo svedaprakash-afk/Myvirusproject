@@ -23,6 +23,7 @@ from . import actions
 from .context import Ctx, build_ctx
 from .identify import Guess, identify, is_ambiguous, name_similarity
 from .references import find_references, strip_ids
+from . import advances, trust
 from .scoring import contributions, predict
 from .subset import find_subsets
 from .tds import TdsScenario, scenarios_for, tds_on
@@ -378,6 +379,9 @@ def fifo_candidate(ctx: Ctx, txn, cust: Customer, guess: Guess) -> Cand | None:
     c = allocate_set(ctx, cust, take, pay, ctx.tolerance(cust.id, txn.currency, pay), {})
     c.strategy = "fifo_guess"
     c.evidence.insert(0, "No reference or exact amount found — applying to the oldest open invoices (a guess for a human to confirm)")
+    skipped = [i.number for i in ctx.open_by_cust.get(cust.id, []) if i.open_minor > 0 and i.disputed and i.currency == txn.currency]
+    if skipped:
+        c.evidence.append(f"Disputed invoice(s) skipped so cash is not applied against something the customer is contesting: {', '.join(skipped)}")
     c.feats = base_feats(ctx, txn, cust, guess, c)
     return c
 
@@ -426,6 +430,7 @@ def guardrails(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, 
         g.append("Straight-through approval is switched off for this entity (suggest-only mode)")
     if c.strategy in ("amount_combination", "amount_inference") and not cfg.get("auto_approve_amount_only", False):
         g.append("Matched on amount alone — no invoice reference; amount-only auto-approval is disabled")
+    g.extend(trust.gate(cfg, ctx.trust.get(c.customer_id) if c.customer_id else None, c.prob))
     return g
 
 
@@ -693,6 +698,7 @@ def _propose(ctx: Ctx, txn: PaymentTransaction, c: Cand, guess: Guess | None, am
     p = MatchProposal(
         entity_id=ctx.entity.id, txn_id=txn.id, customer_id=c.customer_id, status=ProposalStatus.auto_approved if auto else ProposalStatus.pending_review,
         strategy=c.strategy, confidence=round(c.prob, 4), model_version=ctx.model_version,
+        shadow_confidence=round(predict(ctx.shadow_weights, c.feats), 4) if ctx.shadow_weights else None, shadow_model_version=ctx.shadow_version,
         explanation={"summary": _summary(txn, c), "evidence": evidence, "warnings": warnings, "contributions": contribs,
                      "alternatives": [{"invoices": [a.invoice.number for a in o.allocs], "confidence": round(o.prob, 3), "strategy": o.strategy}
                                       for o in all_c if o is not c][:3]},
@@ -753,6 +759,7 @@ def run_matching(db: Session, entity: LegalEntity, txn_ids: list[int] | None = N
         _close_stale_exceptions(ctx, t, res)
     audit.log(db, actor, "matching.run", "LegalEntity", entity.id, entity.id, {**summary, "model": ctx.model_version}, actor_id)
     db.flush()
+    summary["advances_proposed"] = advances.propose_applications(db, entity)["proposed"]
     return {**summary, "model_version": ctx.model_version}
 
 

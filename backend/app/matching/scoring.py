@@ -58,6 +58,11 @@ def ensure_model(db: Session) -> ScoringModel:
     return m
 
 
+def shadow_model(db: Session) -> ScoringModel | None:
+    """The candidate currently being evaluated on live traffic (at most one). It never decides anything."""
+    return db.execute(select(ScoringModel).where(ScoringModel.shadow.is_(True), ScoringModel.active.is_(False)).order_by(ScoringModel.id.desc())).scalars().first()
+
+
 def log_loss(weights: dict, samples: list[tuple[dict, int]]) -> float:
     if not samples:
         return float("nan")

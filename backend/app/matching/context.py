@@ -10,9 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..indian import normalise_name, normalise_ref
-from ..models import (DEFAULT_ENTITY_CONFIG, Customer, CustomerIdentifier, CustomerProfile, Invoice, LegalEntity,
+from ..models import (DEFAULT_ENTITY_CONFIG, Customer, CustomerIdentifier, CustomerProfile, CustomerTrust, Invoice, LegalEntity,
                       MatchProposal, ProposalStatus, ToleranceRule, utcnow)
-from .scoring import ensure_model
+from .scoring import ensure_model, shadow_model
 
 
 @dataclass
@@ -33,6 +33,9 @@ class Ctx:
     tolerances: list[ToleranceRule]
     reserved: dict[int, set[int]] = field(default_factory=lambda: defaultdict(set))  # invoice_id -> txn_ids pending
     other_entity_names: dict[int, str] = field(default_factory=dict)
+    trust: dict[int, CustomerTrust] = field(default_factory=dict)
+    shadow_weights: dict | None = None
+    shadow_version: str | None = None
 
     def tolerance(self, customer_id: int | None, currency: str, amount: int) -> int:
         """Most specific rule wins: customer > currency > entity default. tol = abs, or max(abs, pct) if pct set."""
@@ -94,5 +97,9 @@ def build_ctx(db: Session, entity: LegalEntity) -> Ctx:
                                                     MatchProposal.status == ProposalStatus.pending_review)).scalars():
         for a in p.allocations:
             ctx.reserved[a.invoice_id].add(p.txn_id)
+    ctx.trust = {t.customer_id: t for t in db.execute(select(CustomerTrust).where(CustomerTrust.entity_id == entity.id)).scalars()}
+    sm = shadow_model(db)
+    if sm:
+        ctx.shadow_weights, ctx.shadow_version = sm.weights, sm.version
     ctx.other_entity_names = {e.id: normalise_name(e.name) for e in db.execute(select(LegalEntity)).scalars() if e.id != entity.id}
     return ctx

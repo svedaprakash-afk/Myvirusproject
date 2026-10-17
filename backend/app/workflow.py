@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 
 from . import audit
 from .indian import normalise_name
-from .matching import actions, engine
+from .matching import actions, advances, engine
 from .matching.context import build_ctx
 from .models import (Adjustment, ApprovalKind, ApprovalPolicy, ApprovalRequest, ApprovalStatus, Customer, CustomerIdentifier,
-                     ExceptionCase, ExceptionNote, ExceptionStatus, ExceptionType, Invoice, LegalEntity, MatchAllocation, MatchFeedback, MatchProposal,
+                     ExceptionCase, ExceptionNote, ExceptionStatus, ExceptionType, Invoice, LegalEntity, MatchAllocation, MatchFeedback, MatchProposal, OnAccountBalance,
                      PaymentTransaction, ProposalStatus, Role, TxnStatus, User, utcnow, DEFAULT_LEDGERS)
 from .security import RANK, P
 
@@ -86,6 +86,9 @@ def _execute(db: Session, user: User, req: ApprovalRequest) -> None:
         db.add(adj)
         _close_exception(db, pl.get("exception_id"), ExceptionStatus.written_off, "written_off", req.reason)
     elif req.kind == ApprovalKind.refund:
+        ex_r = db.get(ExceptionCase, pl.get("exception_id")) if pl.get("exception_id") else None
+        if ex_r:
+            advances.mark_refunded(db, ex_r.proposal_id, ex_r.txn_id)
         _close_exception(db, pl.get("exception_id"), ExceptionStatus.resolved, "refund_approved", req.reason)
     elif req.kind == ApprovalKind.manual_match:
         p = db.get(MatchProposal, pl["proposal_id"])
@@ -154,9 +157,19 @@ def resolve_exception(db: Session, user: User, ex: ExceptionCase, action: str, p
         cust = db.get(Customer, params.get("customer_id") or ex.customer_id or (txn.customer_id if txn else None))
         if not cust or not txn:
             raise WorkflowError("Link a customer first")
+        prior = db.get(MatchProposal, ex.proposal_id) if ex.proposal_id else None
+        if prior and prior.status in (ProposalStatus.accepted, ProposalStatus.auto_approved, ProposalStatus.posted) and prior.unapplied_minor > 0:
+            # an overpayment: the excess is already in the unapplied-cash ledger through the applied proposal. Creating another
+            # proposal here would post the whole bank receipt a second time.
+            _close(ex, "on_account", user, params)
+            return {"proposal_id": prior.id, "note": "Excess is held on account and is available for future invoices"}
         p = _manual_proposal(db, entity, txn, cust, [], user, "manual_on_account", "Held on account (unapplied advance) pending invoice")
         p.unapplied_minor = txn.receivable_minor
         actions.apply_proposal(db, None, p, user.name, user.id)
+        if params.get("reference"):
+            bal = db.execute(select(OnAccountBalance).where(OnAccountBalance.proposal_id == p.id)).scalar_one_or_none()
+            if bal:
+                bal.reference = str(params["reference"])[:60]
         _close(ex, "on_account", user, params)
         return {"proposal_id": p.id}
 

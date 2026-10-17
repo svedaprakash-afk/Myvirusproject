@@ -3,7 +3,7 @@
 Security model for inbound mail (it is attacker-controlled input that can influence matching):
   * sender domain allow-list (optional) and SPF/DKIM verdict from the receiving server's Authentication-Results header;
   * mail failing the authentication policy is QUARANTINED, not extracted, until a human releases it;
-  * attachments are size/type/count limited; PDFs/XLSX are only text-extracted, never executed;
+  * attachments are size/type/count limited; PDFs/XLSX/images are only text-extracted (OCR for scans), never executed;
   * extracted values are only *evidence* for the scorer and every reference must resolve to a real open item;
   * polling is idempotent on Message-ID.
 Credentials are read from an environment variable NAMED in the config, never stored.
@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session
 from .. import audit
 from ..config import check_egress
 from ..models import RemittanceDocument
-from . import service as ing
+from . import ocr, service as ing
 from .remittance import get_extractor, text_from_upload
 
-ALLOWED_ATTACH = (".pdf", ".xlsx", ".xlsm", ".csv", ".txt", ".eml")
+ALLOWED_ATTACH = (".pdf", ".xlsx", ".xlsm", ".csv", ".txt", ".eml", ".png", ".jpg", ".jpeg", ".tif", ".tiff")
 MAX_ATTACH, MAX_BYTES = 5, 10 * 1024 * 1024
 
 
@@ -89,6 +89,8 @@ def message_text(msg) -> str:
         try:
             parts.append(f"--- attachment: {name} ---\n" + text_from_upload(name, data))
             n += 1
+        except ocr.OcrUnavailable:
+            parts.append(f"--- attachment: {name} (scanned image: OCR is not installed, nothing was read) ---")
         except Exception:
             parts.append(f"--- attachment: {name} (unreadable) ---")
     return "\n".join(parts)

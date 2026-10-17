@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app import config
 from app.indian import parse_narration, validate_rules
 from app.ingestion import feeds, mailbox, service as ing
-from app.ingestion.remittance import LLMExtractor, get_extractor
+from app.ingestion.remittance import LLMExtractor, RuleExtractor, get_extractor
 from app.ingestion.statements import StatementError
 from app.models import BatchStatus, CustomerIdentifier, PaymentTransaction, RemittanceDocument
 from app.posting import mapped, service as posting
@@ -342,10 +342,10 @@ def test_llm_extractor_is_disabled_in_strict_mode_even_with_a_key(monkeypatch):
     monkeypatch.setattr(config, "settings", dataclasses.replace(config.settings, anthropic_api_key="k"))
     import app.config as c
 
-    assert isinstance(get_extractor(), LLMExtractor)
+    assert isinstance(get_extractor().llm, LLMExtractor) and isinstance(get_extractor().rules, RuleExtractor)
     _strict(monkeypatch)
     monkeypatch.setattr(config, "settings", dataclasses.replace(config.settings, anthropic_api_key="k"))
-    assert not isinstance(get_extractor(), LLMExtractor), "remittance text must never leave India by default"
+    assert get_extractor().llm is None, "remittance text must never leave India by default"
 
 
 def test_webhook_to_unlisted_host_cannot_be_configured_or_called(client, db, w, monkeypatch):

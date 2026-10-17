@@ -134,6 +134,8 @@ DEFAULT_ENTITY_CONFIG = {
     "straight_through_release": False,  # auto-release posting batches without a human
     "sla_hours": 48,
     "max_subset_size": 8,
+    # per-customer graduation to straight-through (off by default: existing entities behave as before)
+    "trust_graduation": {"enabled": False, "graduate_after": 5, "demote_on_correction": True},
 }
 DEFAULT_LEDGERS = {
     "ar_control": "1200-AR",
@@ -321,6 +323,8 @@ class MatchProposal(Base):
     strategy: Mapped[str] = mapped_column(String(40))
     confidence: Mapped[float] = mapped_column(Float)
     model_version: Mapped[str] = mapped_column(String(20))
+    shadow_confidence: Mapped[float | None] = mapped_column(Float)      # what the shadow model would have said (evaluation only)
+    shadow_model_version: Mapped[str | None] = mapped_column(String(20))
     explanation: Mapped[dict] = mapped_column(JSON, default=dict)
     features: Mapped[dict] = mapped_column(JSON, default=dict)
     guardrails: Mapped[list] = mapped_column(JSON, default=list)  # reasons auto-approval was blocked
@@ -373,6 +377,7 @@ class ScoringModel(Base):
     version: Mapped[str] = mapped_column(String(20), unique=True)
     weights: Mapped[dict] = mapped_column(JSON)
     active: Mapped[bool] = mapped_column(Boolean, default=False)
+    shadow: Mapped[bool] = mapped_column(Boolean, default=False)   # scored alongside the active model on live traffic; never decides anything
     metrics: Mapped[dict] = mapped_column(JSON, default=dict)
     note: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -500,6 +505,57 @@ class ExchangeRate(Base):
     rate_micro: Mapped[int] = mapped_column(BigInteger)
     source: Mapped[str] = mapped_column(String(40), default="manual")
     __table_args__ = (UniqueConstraint("currency", "rate_date"),)
+
+
+class CustomerTrust(Base):
+    """Per-customer straight-through state. A customer starts in `learning` (every match needs a human) and graduates to `auto`
+    after N consecutive human-confirmed matches with no correction; any rejection, correction or reversed auto-match demotes."""
+    __tablename__ = "customer_trust"
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    mode: Mapped[str] = mapped_column(String(14), default="learning")   # learning | auto | suggest_only (pinned by a human)
+    clean_streak: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed: Mapped[int] = mapped_column(Integer, default=0)
+    corrections: Mapped[int] = mapped_column(Integer, default=0)
+    threshold_override: Mapped[float | None] = mapped_column(Float)      # can only RAISE the entity's auto-approve threshold
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)         # a human set the mode: automation never changes it
+    note: Mapped[str] = mapped_column(String(300), default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
+class OnAccountBalance(Base):
+    """Cash received and posted to the unapplied-cash ledger that is still available to settle future invoices."""
+    __tablename__ = "on_account_balances"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"), index=True)
+    txn_id: Mapped[int] = mapped_column(ForeignKey("payment_transactions.id"), index=True)
+    proposal_id: Mapped[int] = mapped_column(ForeignKey("match_proposals.id"), unique=True)
+    currency: Mapped[str] = mapped_column(String(3), default="INR")
+    original_minor: Mapped[int] = mapped_column(BigInteger)
+    remaining_minor: Mapped[int] = mapped_column(BigInteger)
+    reference: Mapped[str | None] = mapped_column(String(60))       # PO / proforma the payer quoted, used to target the right invoice
+    status: Mapped[str] = mapped_column(String(10), default="open")  # open | used | refunded
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class AdvanceApplication(Base):
+    """A proposal (and later the record) of settling one invoice from an on-account balance. Posts as Dr unapplied cash / Cr AR."""
+    __tablename__ = "advance_applications"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entity_id: Mapped[int] = mapped_column(ForeignKey("legal_entities.id"), index=True)
+    balance_id: Mapped[int] = mapped_column(ForeignKey("on_account_balances.id"), index=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id"), index=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id"))
+    amount_minor: Mapped[int] = mapped_column(BigInteger)
+    basis: Mapped[str] = mapped_column(String(20))                    # reference | oldest_first
+    status: Mapped[str] = mapped_column(String(10), default="proposed")  # proposed | applied | rejected
+    decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime)
+    adjustment_id: Mapped[int | None] = mapped_column(ForeignKey("adjustments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    __table_args__ = (UniqueConstraint("balance_id", "invoice_id"),)
 
 
 class JobRun(Base):

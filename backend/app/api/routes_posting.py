@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .. import analytics, audit
 from ..config import settings
 from ..db import get_db
-from ..matching import scoring
+from ..matching import monitoring, scoring
 from ..models import AuditLog, MatchFeedback, MatchProposal, PostingBatch, ProposalStatus, ScoringModel, User
 from ..posting import service as posting
 from ..security import require
@@ -199,7 +199,7 @@ def models(user: User = Depends(require("view")), db: Session = Depends(get_db))
     pos = db.scalar(select(func.coalesce(func.sum(MatchFeedback.label), 0))) or 0
     n = db.scalar(select(func.count()).select_from(MatchFeedback)) or 0
     return {"feedback": {"total": n, "positive": int(pos), "negative": n - int(pos)},
-            "items": [{"id": m.id, "version": m.version, "active": m.active, "weights": m.weights, "metrics": m.metrics, "note": m.note, "created_at": S.d(m.created_at)} for m in rows]}
+            "items": [{"id": m.id, "version": m.version, "active": m.active, "shadow": m.shadow, "weights": m.weights, "metrics": m.metrics, "note": m.note, "created_at": S.d(m.created_at)} for m in rows]}
 
 
 @router.post("/models/retrain")
@@ -216,8 +216,39 @@ def activate(mid: int, user: User = Depends(require("train")), db: Session = Dep
     m = get_or_404(db, ScoringModel, mid)
     for x in db.execute(select(ScoringModel)).scalars():
         x.active = x.id == m.id
+    m.shadow = False   # a promoted model is no longer a shadow
     audit.log(db, user.name, "model.activated", "ScoringModel", m.id, None, {"version": m.version}, user.id)
     return {"active": m.version}
+
+
+class ShadowIn(BaseModel):
+    enabled: bool = True
+
+
+@router.post("/models/{mid}/shadow")
+def set_shadow(mid: int, body: ShadowIn, user: User = Depends(require("train")), db: Session = Depends(get_db)):
+    """Score this candidate alongside the active model on live proposals. It never decides anything; only one shadow runs at a time."""
+    m = get_or_404(db, ScoringModel, mid)
+    if m.active and body.enabled:
+        raise HTTPException(409, "The active model cannot be a shadow")
+    if body.enabled:
+        for x in db.execute(select(ScoringModel).where(ScoringModel.shadow.is_(True))).scalars():
+            x.shadow = False
+    m.shadow = body.enabled
+    audit.log(db, user.name, "model.shadow_started" if body.enabled else "model.shadow_stopped", "ScoringModel", m.id, None, {"version": m.version}, user.id)
+    return {"shadow": m.version if body.enabled else None}
+
+
+@router.get("/models/health")
+def model_health(entity_id: int, window_days: int = 14, baseline_days: int = 60, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    entity_for(db, user, entity_id)
+    return monitoring.health(db, entity_id, max(3, min(window_days, 90)), max(7, min(baseline_days, 365)))
+
+
+@router.get("/models/shadow")
+def model_shadow(entity_id: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    entity_for(db, user, entity_id)
+    return monitoring.shadow_report(db, entity_id)
 
 
 # ---------------------------------------------------------------------------------------------- demo

@@ -25,7 +25,7 @@ def tables(e):
 
 
 def test_fresh_database_upgrades_to_exactly_the_models(eng):
-    assert migrate.upgrade(eng) == migrate.head() == "0002"
+    assert migrate.upgrade(eng) == migrate.head() == "0003"
     assert tables(eng) == set(Base.metadata.tables) | {"alembic_version"}
     assert migrate.drift(eng) == [], "CI GUARD: a model changed without a migration. Run `python -m app.cli create-migration \"msg\"` and review it."
 
@@ -62,7 +62,7 @@ def test_0001_to_0002_upgrade_preserves_existing_batches_and_downgrade_removes_t
     with eng.begin() as c:
         c.execute(text("insert into legal_entities (id, name, base_currency, config, ledgers) values (1, 'E', 'INR', '{}', '{}')"))
         c.execute(text("insert into posting_batches (id, entity_id, status, idempotency_key, created_at, total_minor) values (7, 1, 'draft', 'k', '2026-10-01 00:00:00', 5)"))
-    assert migrate.upgrade(eng) == "0002"
+    assert migrate.upgrade(eng, "0002") == "0002"
     with eng.connect() as c:
         assert c.execute(text("select total_minor, export_key from posting_batches where id = 7")).one() == (5, None)
     migrate.downgrade(eng, "0001")
@@ -75,16 +75,45 @@ def test_legacy_database_from_an_older_release_is_stamped_at_its_own_revision_th
     """A create_all() database from before export_key existed: it is at 0001, so adoption stamps 0001 and the upgrade ADDS the column
     (stamping head would silently leave it without the column; stamping 0001 blindly would break databases that already have it)."""
     Base.metadata.create_all(eng)
+    _strip_0003(eng)
     with eng.begin() as c:
         c.execute(text("alter table posting_batches drop column export_key"))
     assert migrate.adoptable_revision(eng) == ("0001", [])
-    assert migrate.upgrade(eng) == "0002"
+    assert migrate.upgrade(eng) == "0003"
     assert "export_key" in {c["name"] for c in inspect(eng).get_columns("posting_batches")}
+    assert "customer_trust" in tables(eng)
+
+
+def _strip_0003(eng):
+    with eng.begin() as c:
+        for t in ("advance_applications", "on_account_balances", "customer_trust"):
+            c.execute(text(f"drop table {t}"))
+        c.execute(text("alter table match_proposals drop column shadow_confidence"))
+        c.execute(text("alter table match_proposals drop column shadow_model_version"))
+        c.execute(text("alter table scoring_models drop column shadow"))
+
+
+def test_legacy_database_at_0002_is_stamped_there_and_upgraded_to_head(eng):
+    Base.metadata.create_all(eng)
+    _strip_0003(eng)
+    assert migrate.adoptable_revision(eng) == ("0002", [])
+    assert migrate.upgrade(eng) == "0003"
+
+
+def test_0002_to_0003_keeps_existing_models_and_defaults_shadow_off_and_downgrades(eng):
+    migrate.upgrade(eng, "0002")
+    with eng.begin() as c:
+        c.execute(text("insert into scoring_models (id, version, weights, active, metrics, note, created_at) values (1, 'v1', '{}', 1, '{}', '', '2026-10-01 00:00:00')"))
+    migrate.upgrade(eng)
+    with eng.connect() as c:
+        assert c.execute(text("select shadow from scoring_models where id = 1")).scalar() in (0, False)
+    migrate.downgrade(eng, "0002")
+    assert "customer_trust" not in tables(eng) and "shadow" not in {c["name"] for c in inspect(eng).get_columns("scoring_models")}
 
 
 def test_legacy_database_that_already_has_the_latest_columns_is_stamped_at_head(eng):
     Base.metadata.create_all(eng)
-    assert migrate.adoptable_revision(eng) == ("0002", [])
+    assert migrate.adoptable_revision(eng) == ("0003", [])
 
 
 def test_legacy_database_that_does_not_match_the_baseline_is_refused_untouched(eng):

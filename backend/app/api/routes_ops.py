@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 
 from .. import audit, workflow
 from ..db import get_db
-from ..matching import actions, engine
-from ..models import (ApprovalRequest, ApprovalStatus, ExceptionCase, ExceptionNote, ExceptionStatus, ExceptionType, MatchProposal,
+from ..matching import actions, advances, engine
+from ..models import (AdvanceApplication, Customer, Invoice, OnAccountBalance, ApprovalRequest, ApprovalStatus, ExceptionCase, ExceptionNote, ExceptionStatus, ExceptionType, MatchProposal,
                       PaymentTransaction, ProposalStatus, RemittanceDocument, TdsEntry, TxnStatus, User)
 from ..security import can_see_pii, require
 from . import serializers as S
@@ -292,3 +292,59 @@ def tds_status(tid: int, body: CertIn, user: User = Depends(require("match", "ap
         t.in_26as = body.in_26as
     audit.log(db, user.name, "tds.status", "TdsEntry", t.id, t.entity_id, body.model_dump(exclude_none=True), user.id)
     return S.tds(t)
+
+
+# ---------------------------------------------------------------------------------------------- on-account & advances
+def _advance_view(db, a: AdvanceApplication) -> dict:
+    inv, cust = db.get(Invoice, a.invoice_id), db.get(Customer, a.customer_id)
+    return {"id": a.id, "status": a.status, "basis": a.basis, "amount_minor": a.amount_minor, "balance_id": a.balance_id,
+            "invoice": {"id": inv.id, "number": inv.number, "due_date": S.d(inv.due_date), "open_minor": inv.open_minor, "currency": inv.currency, "po_ref": inv.po_ref},
+            "customer": S.customer(cust)}
+
+
+@router.get("/advances")
+def list_advances(entity_id: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    entity = entity_for(db, user, entity_id)
+    bals = db.execute(select(OnAccountBalance).where(OnAccountBalance.entity_id == entity_id, OnAccountBalance.status == "open")
+                      .order_by(OnAccountBalance.created_at)).scalars().all()
+    props = db.execute(select(AdvanceApplication).where(AdvanceApplication.entity_id == entity_id, AdvanceApplication.status == "proposed")
+                       .order_by(AdvanceApplication.id)).scalars().all()
+    out = []
+    for b in bals:
+        t = db.get(PaymentTransaction, b.txn_id)
+        out.append({"id": b.id, "customer": S.customer(db.get(Customer, b.customer_id)), "currency": b.currency, "original_minor": b.original_minor,
+                    "remaining_minor": b.remaining_minor, "reference": b.reference, "txn_id": b.txn_id, "txn_date": S.d(t.txn_date), "utr": t.utr,
+                    "created_at": S.d(b.created_at)})
+    return {"balances": out, "proposals": [_advance_view(db, a) for a in props],
+            "total_minor": sum(b.remaining_minor for b in bals if b.currency == entity.base_currency)}
+
+
+@router.post("/advances/propose")
+def propose_advances(entity_id: int, user: User = Depends(require("match")), db: Session = Depends(get_db)):
+    return advances.propose_applications(db, entity_for(db, user, entity_id))
+
+
+class AdvDecision(BaseModel):
+    reason: str = Field("", max_length=300)
+
+
+@router.post("/advances/{aid}/accept")
+def accept_advance(aid: int, user: User = Depends(require("match")), db: Session = Depends(get_db)):
+    a = get_or_404(db, AdvanceApplication, aid)
+    guard(user, a)
+    try:
+        advances.accept(db, a, user)
+    except advances.AdvanceError as e:
+        raise HTTPException(409, str(e))
+    return _advance_view(db, a)
+
+
+@router.post("/advances/{aid}/reject")
+def reject_advance(aid: int, body: AdvDecision, user: User = Depends(require("match")), db: Session = Depends(get_db)):
+    a = get_or_404(db, AdvanceApplication, aid)
+    guard(user, a)
+    try:
+        advances.reject(db, a, user, body.reason)
+    except advances.AdvanceError as e:
+        raise HTTPException(409, str(e))
+    return _advance_view(db, a)

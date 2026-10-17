@@ -10,6 +10,9 @@ from ..models import (Customer, CustomerIdentifier, CustomerProfile, ExceptionCa
                       MatchAllocation, MatchFeedback, MatchProposal, PaymentTransaction, ProposalStatus, TdsEntry, TxnStatus, utcnow)
 
 
+from . import advances, trust
+
+
 class ActionError(ValueError):
     pass
 
@@ -47,6 +50,7 @@ def apply_proposal(db: Session, ctx, p: MatchProposal, actor: str, actor_id: int
             db.add(TdsEntry(entity_id=p.entity_id, customer_id=a.invoice.customer_id, invoice_id=a.invoice_id, proposal_id=p.id,
                             txn_date=txn.txn_date, fy=fy, quarter=q, section=a.tds_section, rate_bp=a.tds_rate_bp, amount_minor=a.tds_minor))
     _residual_exceptions(db, p, txn, ctx)
+    advances.create_balance(db, p, txn)
     # close open exceptions on this txn that this proposal superseded
     for ex in db.execute(select(ExceptionCase).where(ExceptionCase.txn_id == txn.id, ExceptionCase.status == ExceptionStatus.open,
                                                      ExceptionCase.type.in_([ExceptionType.unidentified_receipt, ExceptionType.on_account]))).scalars():
@@ -57,6 +61,11 @@ def apply_proposal(db: Session, ctx, p: MatchProposal, actor: str, actor_id: int
                "writeoff_minor": p.writeoff_minor, "invoices": [a.invoice.number for a in p.allocations]}, actor_id)
     if not auto and p.features:  # manual allocations carry no engine features, so they cannot be a training example
         db.add(MatchFeedback(entity_id=p.entity_id, proposal_id=p.id, label=1, features=p.features, user_id=actor_id))
+    if not auto:
+        if trust.is_engine_proposal(p):
+            trust.record_confirmation(db, p, actor, actor_id)
+        elif p.strategy.startswith("manual") and p.strategy != "manual_on_account":
+            trust.record_correction(db, p.customer_id, p.entity_id, "analyst overrode the engine with a manual allocation", actor_id)
     db.flush()
 
 
@@ -136,6 +145,7 @@ def reject_proposal(db: Session, p: MatchProposal, actor: str, actor_id: int | N
     txn = db.get(PaymentTransaction, p.txn_id)
     txn.status = TxnStatus.new
     db.add(MatchFeedback(entity_id=p.entity_id, proposal_id=p.id, label=0, features=p.features, user_id=actor_id))
+    trust.record_correction(db, p.customer_id, p.entity_id, "engine proposal rejected by a reviewer", actor_id)
     audit.log(db, actor, "proposal.rejected", "MatchProposal", p.id, p.entity_id, {"txn": txn.id, "reason": reason}, actor_id)
 
 
@@ -145,6 +155,10 @@ def reverse_proposal(db: Session, p: MatchProposal, actor: str, actor_id: int | 
         raise ActionError("Only applied, unposted proposals can be reversed")
     if p.batch_id:
         raise ActionError("Already included in a posting batch; cancel the batch first or post a reversal in the ERP")
+    try:
+        advances.void_balance_for(db, p)
+    except advances.AdvanceError as e:
+        raise ActionError(str(e))
     was_auto = p.status == ProposalStatus.auto_approved
     for a in p.allocations:
         a.invoice.open_minor += a.applied_minor + a.tds_minor + a.writeoff_minor
@@ -157,4 +171,5 @@ def reverse_proposal(db: Session, p: MatchProposal, actor: str, actor_id: int | 
     txn.status = TxnStatus.new
     # a human reversing an applied match is the strongest negative signal we get
     db.add(MatchFeedback(entity_id=p.entity_id, proposal_id=p.id, label=0, features=p.features, user_id=actor_id))
+    trust.record_correction(db, p.customer_id, p.entity_id, "applied match was reversed", actor_id, was_auto=was_auto)
     audit.log(db, actor, "proposal.reversed", "MatchProposal", p.id, p.entity_id, {"txn": txn.id, "reason": reason, "was_auto": was_auto}, actor_id)

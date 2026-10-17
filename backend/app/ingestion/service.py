@@ -272,15 +272,24 @@ def _learn(db: Session, entity_id: int, customer_id: int, kind: str, value: str,
 
 # ---------------------------------------------------------------------------- remittance intake
 def ingest_remittance(db: Session, entity_id: int, text: str, filename: str | None, source: str, actor: str,
-                      actor_id: int | None, extractor: RemittanceExtractor | None = None) -> RemittanceDocument:
+                      actor_id: int | None, extractor: RemittanceExtractor | None = None, upload=None) -> RemittanceDocument:
+    """`upload` is the UploadText the text came from (OCR provenance/quality), when it came from a file."""
     ex = extractor or get_extractor()
     data = ex.extract(text)
+    if upload is not None and upload.method == "ocr":
+        meta = data.setdefault("meta", {})
+        meta["source_method"], meta["ocr_confidence"], meta["pages_scanned"] = "ocr", round(upload.ocr_confidence or 0, 1), upload.pages
+        meta["warnings"] = [*upload.warnings, *meta.get("warnings", [])]
+        if (upload.ocr_confidence or 0) < 60:       # a poor scan never produces a confident extraction, whatever the arithmetic says
+            data["confidence"] = min(data.get("confidence", 0.0), 0.4)
     doc = RemittanceDocument(entity_id=entity_id, source=source, filename=filename, raw_text=text, extracted=data, extractor=ex.name)
     db.add(doc)
     db.flush()
     link_remittance(db, doc)
     audit.log(db, actor, "remittance.ingested", "RemittanceDocument", doc.id, entity_id,
-              {"extractor": ex.name, "lines": len(data.get("lines", [])), "linked_txn": doc.linked_txn_id}, actor_id)
+              {"extractor": ex.name, "lines": len(data.get("lines", [])), "linked_txn": doc.linked_txn_id,
+               "confidence": data.get("confidence"), "reconciled": (data.get("meta") or {}).get("reconciled"),
+               "ocr": (data.get("meta") or {}).get("source_method") == "ocr", "llm_used": ex.name in ("llm", "rules+llm")}, actor_id)
     return doc
 
 

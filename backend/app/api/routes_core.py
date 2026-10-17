@@ -12,7 +12,8 @@ from .. import audit
 from ..db import get_db
 from ..ingestion import service as ing
 from ..ingestion.statements import StatementError
-from ..models import (BankAccount, Customer, CustomerIdentifier, CustomerProfile, DEFAULT_ENTITY_CONFIG, Invoice, LegalEntity, ToleranceRule, User)
+from ..models import (BankAccount, Customer, CustomerIdentifier, CustomerProfile, CustomerTrust, DEFAULT_ENTITY_CONFIG, Invoice, LegalEntity, ToleranceRule, User)
+from ..matching import trust
 from ..posting.connectors import REGISTRY
 from ..security import can_see_pii, current_user, make_token, require, verify_password
 from . import serializers as S
@@ -65,7 +66,14 @@ def get_config(entity_id: int, user: User = Depends(require("view")), db: Sessio
             "tolerances": [{"id": t.id, "customer_id": t.customer_id, "currency": t.currency, "abs_minor": t.abs_minor, "pct_bp": t.pct_bp} for t in tol]}
 
 
+class TrustCfgIn(BaseModel):
+    enabled: bool | None = None
+    graduate_after: int | None = Field(None, ge=1, le=50)
+    demote_on_correction: bool | None = None
+
+
 class ConfigIn(BaseModel):
+    trust_graduation: TrustCfgIn | None = None
     auto_approve_threshold: float | None = Field(None, ge=0.5, le=0.999)
     review_threshold: float | None = Field(None, ge=0.05, le=0.9)
     auto_approve_max_minor: int | None = Field(None, ge=0)
@@ -86,6 +94,8 @@ def set_config(entity_id: int, body: ConfigIn, user: User = Depends(require("con
     changes = body.model_dump(exclude_none=True)
     tol = changes.pop("default_tolerance_minor", None)
     before = {**DEFAULT_ENTITY_CONFIG, **(e.config or {})}
+    if "trust_graduation" in changes:
+        changes["trust_graduation"] = {**(before.get("trust_graduation") or {}), **changes["trust_graduation"]}
     e.config = {**before, **changes}
     if tol is not None:
         r = db.execute(select(ToleranceRule).where(ToleranceRule.entity_id == e.id, ToleranceRule.customer_id.is_(None), ToleranceRule.currency.is_(None))).scalar_one_or_none()
@@ -115,7 +125,9 @@ def customers(entity_id: int, q: str = "", limit: int = 50, offset: int = 0, use
     total = db.scalar(select(func.count()).select_from(base.subquery()))
     rows = db.execute(base.order_by(Customer.name).limit(limit).offset(offset)).scalars().all()
     opens = dict(db.execute(select(Invoice.customer_id, func.sum(Invoice.open_minor)).where(Invoice.entity_id == entity_id).group_by(Invoice.customer_id)).all())
-    return {"total": total, "items": [{**S.customer(c, brief=False), "open_minor": int(opens.get(c.id) or 0)} for c in rows]}
+    trusts = {t.customer_id: t for t in db.execute(select(CustomerTrust).where(CustomerTrust.entity_id == entity_id)).scalars()}
+    return {"total": total, "items": [{**S.customer(c, brief=False), "open_minor": int(opens.get(c.id) or 0),
+                                       "trust_mode": trusts[c.id].mode if c.id in trusts else "learning"} for c in rows]}
 
 
 @router.get("/customers/{cid}")
@@ -131,6 +143,30 @@ def customer_detail(cid: int, user: User = Depends(require("view")), db: Session
                                               "last_paid": S.d(prof.last_paid)},
             "identifiers": [{"kind": i.kind, "value": i.value, "hits": i.hits, "source": i.source} for i in idents],
             "open_invoices": [S.invoice(i) for i in invs]}
+
+
+@router.get("/customers/{cid}/trust")
+def customer_trust(cid: int, user: User = Depends(require("view")), db: Session = Depends(get_db)):
+    c = get_or_404(db, Customer, cid)
+    guard(user, c)
+    return trust.snapshot(db, c)
+
+
+class TrustIn(BaseModel):
+    mode: str | None = Field(None, pattern="^(learning|auto|suggest_only)$")
+    threshold_override: float | None = Field(None, ge=0.5, le=0.999)
+    clear_threshold: bool = False
+    note: str = Field("", max_length=300)
+
+
+@router.post("/customers/{cid}/trust")
+def set_customer_trust(cid: int, body: TrustIn, user: User = Depends(require("approve")), db: Session = Depends(get_db)):
+    c = get_or_404(db, Customer, cid)
+    guard(user, c)
+    if body.mode == "auto" and not body.note.strip():
+        raise HTTPException(422, "Give a reason when pinning a customer to straight-through")
+    trust.set_mode(db, c, body.mode, body.threshold_override, body.clear_threshold, body.note, user.name, user.id)
+    return trust.snapshot(db, c)
 
 
 class CustomerPatch(BaseModel):
@@ -219,17 +255,21 @@ async def ingest_open_items(entity_id: int = Form(...), full_snapshot: bool = Fo
 @router.post("/ingest/remittance")
 async def ingest_remittance(entity_id: int = Form(...), text: str = Form(None), source: str = Form("manual"), file: UploadFile = File(None),
                             user: User = Depends(require("ingest")), db: Session = Depends(get_db)):
-    from ..ingestion.remittance import text_from_upload
+    from ..ingestion import ocr
+    from ..ingestion.remittance import extract_upload
 
     entity_for(db, user, entity_id)
-    fname = None
+    fname, up = None, None
     if file is not None:
         fname = file.filename
         try:
-            text = text_from_upload(fname or "", await _read(file))
+            up = extract_upload(fname or "", await _read(file))
+            text = up.text
+        except (ocr.OcrUnavailable, ocr.OcrError) as ex:
+            raise HTTPException(422, str(ex))
         except Exception as ex:
             raise HTTPException(422, f"Could not read file: {ex}")
     if not text or not text.strip():
-        raise HTTPException(400, "Provide remittance text or a file")
-    doc = ing.ingest_remittance(db, entity_id, text, fname, source, user.name, user.id)
+        raise HTTPException(422 if up is not None else 400, "No readable text was found in the file" if up is not None else "Provide remittance text or a file")
+    doc = ing.ingest_remittance(db, entity_id, text, fname, source, user.name, user.id, upload=up)
     return {"id": doc.id, "extractor": doc.extractor, "extracted": doc.extracted, "linked_txn_id": doc.linked_txn_id}
