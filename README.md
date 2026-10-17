@@ -53,6 +53,10 @@ Demo logins (password `demo1234`): analyst@ / manager@ / treasury@ / cfo@ / audi
 Tests: `cd backend && pytest` (291; `TEST_DATABASE_URL=postgresql+psycopg://… pytest` runs the same suite on PostgreSQL) and `cd frontend && npm test && npm run build`.
 Production: `kubectl apply -k deploy/k8s` (see `deploy/README.md`) or `docker compose up` with `JWT_SECRET`, `DEPLOY_REGION` set; create the first user with `python -m app.cli create-user`.
 
+Static demo (no backend, synthetic data): seed and run the API, then `python -m app.seed.demo_scenario http://localhost:8000` (drives the tenant into a state that shows
+the newer features), `python -m app.seed.export_snapshot http://localhost:8000 frontend/src/demo/snapshot.json`, and
+`cd frontend && npx vite build --config vite.demo.config.ts && node scripts/inline-demo.mjs out.html`.
+
 ## Architecture
 `ingestion/` parsers + idempotent persistence -> `matching/` (context, identify, references, subset, tds, scoring, engine, actions) ->
 `workflow.py` (approvals, exceptions, manual match) -> `posting/` (canonical journal, connectors) -> `analytics.py`; REST in `api/`;

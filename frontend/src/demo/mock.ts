@@ -63,7 +63,28 @@ function get(path: string, q: URLSearchParams): unknown {
   const p = pe(eid);
   if (path === "/auth/me") { const u = me(); if (!u) throw new ApiError(401, "Not signed in"); return { id: u.id, name: u.name, email: u.email, role: u.role }; }
   if (path === "/entities") return S.entities;
-  if (path === "/connectors") return S.connectors;
+  if (path === "/connectors") return q.get("entity_id") ? p.connectors : S.connectors;
+  if (path === "/auth/sso/config") return S.sso_config;
+  if (path === "/advances") return p.advances;
+  if ((m = path.match(/^\/customers\/(\d+)\/trust$/))) { const t = p.trust[m[1]]; if (!t) throw notFound(); return t; }
+  if (path === "/models/health") return p.model_health;
+  if (path === "/models/shadow") return p.model_shadow;
+  if (path === "/reports/ageing") return p.ageing;
+  if (path === "/reports/tds-register") {
+    const fy = q.get("fy"), d = clone(p.tds_register), rows = fy ? d.rows.filter((r: Row) => r.fy === fy) : d.rows;
+    const sum = (k: string) => rows.reduce((n: number, r: Row) => n + r[k], 0);
+    return { ...d, rows, totals: Object.fromEntries(["amount_minor", "certificate_minor", "pending_minor", "in_26as_minor", "not_in_26as_minor"].map((k) => [k, sum(k)])),
+      overdue_minor: rows.filter((r: Row) => r.overdue).reduce((n: number, r: Row) => n + r.pending_minor, 0), overdue_customers: new Set(rows.filter((r: Row) => r.overdue).map((r: Row) => r.customer_id)).size };
+  }
+  if (path === "/tax/26as/reconciliation") {
+    const d = clone(p.recon_26as);
+    return q.get("fy") === d.fy && (q.get("source") ?? "26AS") === d.source ? d : { ...d, fy: q.get("fy"), source: q.get("source"), rows: [], unmapped: [], summary: Object.fromEntries(Object.keys(d.summary).map((k) => [k, 0])), ours_minor: 0, reported_minor: 0, at_risk_minor: 0, unclaimed_minor: 0 };
+  }
+  if (path === "/tax/gst/crosscheck") return p.gst_check;
+  if (path === "/periods/lock") return p.period_lock;
+  if ((m = path.match(/^\/entities\/(\d+)\/notifications$/))) return pe(+m[1]).notif_cfg;
+  if (path === "/notifications") return p.notif_list;
+  if (path === "/posting/unconfirmed") return p.unconfirmed;
   if (path === "/bank-templates") return S.bank_templates;
   if (path === "/models") return S.models;
   if (path === "/fx-rates/feed") return S.fx_feed;
@@ -230,7 +251,48 @@ function post(path: string, body: Row): unknown {
     for (const e of Object.values<Row>(S.per_entity)) { const t = (e.tds as Row[]).find((r) => r.id === +m![1]); if (t) { Object.assign(t, Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null))); return t; } }
     throw notFound();
   }
-  const names: [RegExp, string][] = [[/^\/matching\/run$/, "Run matching"], [/^\/posting\/batches/, "Posting batches"], [/^\/ingest|^\/entities\/\d+\/mailbox/, "Import / mailbox poll"],
+  if ((m = path.match(/^\/advances\/(\d+)\/(accept|reject)$/))) {
+    may("ar_analyst", "ar_manager");
+    for (const [eid, e] of Object.entries<Row>(S.per_entity)) {
+      const a = (e.advances.proposals as Row[]).find((r) => r.id === +m![1]);
+      if (!a) continue;
+      if (m[2] === "accept") {
+        const bal = (e.advances.balances as Row[]).find((b) => b.id === a.balance_id), inv = (e.invoices as Row[]).find((i) => i.id === a.invoice.id);
+        if (bal) { bal.remaining_minor -= a.amount_minor; if (bal.remaining_minor <= 0) e.advances.balances = (e.advances.balances as Row[]).filter((b) => b.id !== bal.id); }
+        if (inv) inv.open_minor -= a.amount_minor;
+        audit(+eid, "advance.applied", "AdvanceApplication", a.id, { invoice: a.invoice.number, amount_minor: a.amount_minor, basis: a.basis });
+      }
+      e.advances.proposals = (e.advances.proposals as Row[]).filter((r) => r.id !== a.id);
+      e.advances.total_minor = (e.advances.balances as Row[]).reduce((n, b) => n + b.remaining_minor, 0);
+      return { ...a, status: m[2] === "accept" ? "applied" : "rejected" };
+    }
+    throw notFound();
+  }
+  if (path === "/advances/propose") return { proposed: 0, skipped_foreign_balances: 0 };
+  if ((m = path.match(/^\/customers\/(\d+)\/trust$/))) {
+    may("ar_manager", "finance_head");
+    for (const e of Object.values<Row>(S.per_entity)) {
+      const t = e.trust[m[1]];
+      if (!t) continue;
+      if (body.mode === "auto" && !String(body.note ?? "").trim()) throw new ApiError(422, "Give a reason when pinning a customer to straight-through");
+      if (body.mode) { t.mode = body.mode; t.pinned = body.mode !== "learning"; if (body.mode === "learning") t.clean_streak = 0; }
+      if (body.clear_threshold) t.threshold_override = null; else if (body.threshold_override != null) t.threshold_override = body.threshold_override;
+      t.note = body.note ?? "";
+      const row = (e.customers as Row[]).find((c) => c.id === +m![1]); if (row && body.mode) row.trust_mode = body.mode;
+      return t;
+    }
+    throw notFound();
+  }
+  if (path === "/periods/lock") {
+    may("admin", "finance_head");
+    const eid = Number(body.entity_id), e = pe(eid), cur = e.period_lock.locked_through as string | null, nw = (body.locked_through as string | null) ?? null;
+    if (nw && nw > new Date().toISOString().slice(0, 10)) throw new ApiError(422, "A period cannot be closed in the future");
+    if (cur && (nw === null || nw < cur) && String(body.note ?? "").trim().length < 5) throw new ApiError(422, "Give a reason (at least 5 characters) to re-open a closed period");
+    e.period_lock = { locked_through: nw, note: body.note ?? "", locked_at: now(), locked_by: u.id };
+    audit(eid, cur && (nw === null || nw < cur) ? "period.reopened" : "period.locked", "LegalEntity", eid, { before: cur, after: nw, note: body.note ?? "" });
+    return { locked_through: nw };
+  }
+  const names: [RegExp, string][] = [[/^\/tax\//, "Importing tax statements"], [/^\/entities\/\d+\/(notifications|integrations|config)/, "Changing settings"], [/^\/posting\/batches\/\d+\/ack-file/, "ERP confirmation upload"],[/^\/matching\/run$/, "Run matching"], [/^\/posting\/batches/, "Posting batches"], [/^\/ingest|^\/entities\/\d+\/mailbox/, "Import / mailbox poll"],
     [/^\/bank-accounts\/\d+\/sync/, "Bank feed sync"], [/^\/fx-rates/, "FX rate changes"], [/^\/models/, "Model training"], [/^\/storage/, "Storage test"], [/^\/demo\/seed/, "Reset demo data"],
     [/^\/transactions\/\d+\/manual-match/, "Manual match"], [/^\/remittances/, "Release remittance"]];
   throw readOnly(names.find(([r]) => r.test(path))?.[1] ?? path);

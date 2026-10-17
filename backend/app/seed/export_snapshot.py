@@ -25,7 +25,7 @@ def main(base: str, out: str) -> None:
         return r.json()
 
     snap: dict = {"entities": get("/entities"), "connectors": get("/connectors"), "bank_templates": get("/bank-templates"), "models": get("/models", admin),
-                  "fx_rates": get("/fx-rates?limit=500"), "fx_feed": get("/fx-rates/feed"), "storage": get("/storage", admin), "audit_verify": get("/audit/verify", admin), "per_entity": {}}
+                  "fx_rates": get("/fx-rates?limit=500"), "fx_feed": get("/fx-rates/feed"), "storage": get("/storage", admin), "audit_verify": get("/audit/verify", admin), "sso_config": get("/auth/sso/config"), "per_entity": {}}
     for e in snap["entities"]:
         eid = e["id"]
         pe: dict = {}
@@ -51,6 +51,19 @@ def main(base: str, out: str) -> None:
         pe["customer_detail"] = {x["id"]: get(f"/customers/{x['id']}") for x in pe["customers"]}
         pe["invoices"] = get(f"/invoices?entity_id={eid}&limit=500")["items"]
         pe["audit"] = get(f"/audit?entity_id={eid}&limit=200", admin)["items"]
+        pe["connectors"] = get(f"/connectors?entity_id={eid}")
+        pe["advances"] = get(f"/advances?entity_id={eid}")
+        pe["trust"] = {x["id"]: get(f"/customers/{x['id']}/trust") for x in pe["customers"]}
+        pe["model_health"] = get(f"/models/health?entity_id={eid}")
+        pe["model_shadow"] = get(f"/models/shadow?entity_id={eid}")
+        pe["ageing"] = get(f"/reports/ageing?entity_id={eid}")
+        pe["tds_register"] = get(f"/reports/tds-register?entity_id={eid}")
+        pe["recon_26as"] = get(f"/tax/26as/reconciliation?entity_id={eid}&fy=2026-27&source=26AS")
+        pe["gst_check"] = get(f"/tax/gst/crosscheck?entity_id={eid}")
+        pe["period_lock"] = get(f"/periods/lock?entity_id={eid}")
+        pe["notif_cfg"] = get(f"/entities/{eid}/notifications", admin)
+        pe["notif_list"] = get(f"/notifications?entity_id={eid}&limit=50")
+        pe["unconfirmed"] = get(f"/posting/unconfirmed?entity_id={eid}")
         snap["per_entity"][eid] = pe
     with open(out, "w") as f:
         json.dump(snap, f, separators=(",", ":"))
