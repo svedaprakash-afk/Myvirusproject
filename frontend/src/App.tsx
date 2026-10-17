@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { api, hasToken, setToken, setUnauthorizedHandler, type Entity, type User } from "./api";
 import { AppProvider, useApp } from "./ctx";
-import { Loading } from "./components/ui";
+import { Field, Loading, Modal } from "./components/ui";
+import { useAction } from "./hooks";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Review from "./pages/Review";
@@ -19,9 +20,28 @@ import TaxReports from "./pages/TaxReports";
 import Settings from "./pages/Settings";
 import Connections from "./pages/Connections";
 
+function ChangePassword({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [cur, setCur] = useState(""); const [next, setNext] = useState(""); const [again, setAgain] = useState(""); const { run, busy } = useAction();
+  const bad = next.length < 12 ? "At least 12 characters. A few ordinary words together make a good passphrase." : next !== again ? "The two new passwords differ." : "";
+  const save = async () => {
+    const r = await run(() => api.post<{ token: string }>("/auth/change-password", { current_password: cur, new_password: next }), "Password changed. Other sessions were signed out.");
+    if (r) { setToken(r.token); setCur(""); setNext(""); setAgain(""); onClose(); }
+  };
+  return (
+    <Modal open={open} onClose={onClose} title="Change password">
+      <Field label="Current password"><input type="password" autoComplete="current-password" value={cur} onChange={(e) => setCur(e.target.value)} /></Field>
+      <Field label="New password" hint="Not an email name, your name or a common password. Everywhere else you are signed in is signed out."><input type="password" autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} /></Field>
+      <Field label="New password again"><input type="password" autoComplete="new-password" value={again} onChange={(e) => setAgain(e.target.value)} /></Field>
+      {next && bad && <div className="note warn">{bad}</div>}
+      <div className="row mt"><button className="btn primary" disabled={busy || !cur || !next || !!bad} onClick={save}>Change password</button><button className="btn" onClick={onClose}>Cancel</button></div>
+    </Modal>
+  );
+}
+
 function Shell() {
   const { user, entity, entities, setEntityId, counts } = useApp();
   const nav = useNavigate();
+  const [pw, setPw] = useState(false);
   const [theme, setTheme] = useState<string>(() => { try { return localStorage.getItem("theme") || "auto"; } catch { return "auto"; } });
   useEffect(() => {
     if (theme === "auto") document.documentElement.removeAttribute("data-theme"); else document.documentElement.dataset.theme = theme;
@@ -64,8 +84,10 @@ function Shell() {
             <option value="auto">Theme: system</option><option value="light">Light</option><option value="dark">Dark</option>
           </select>
           <span><b>{user.name}</b> <span className="chip">{user.role.replace("_", " ")}</span></span>
+          <button className="btn sm" onClick={() => setPw(true)}>Change password</button>
           <button className="btn sm" onClick={() => { setToken(null); nav("/login"); window.location.reload(); }}>Sign out</button>
         </header>
+        <ChangePassword open={pw} onClose={() => setPw(false)} />
         <main className="page">
           <Routes>
             <Route path="/" element={<Dashboard />} />

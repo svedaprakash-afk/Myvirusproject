@@ -57,6 +57,10 @@ Static demo (no backend, synthetic data): seed and run the API, then `python -m 
 the newer features), `python -m app.seed.export_snapshot http://localhost:8000 frontend/src/demo/snapshot.json`, and
 `cd frontend && npx vite build --config vite.demo.config.ts && node scripts/inline-demo.mjs out.html`.
 
+### Hosting it for real (single VM)
+
+`deploy/vm/` is a Docker Compose package (HTTPS via Caddy, PostgreSQL, worker, encrypted nightly backups, `install.sh`, `ops.sh`) with a runbook in `docs/RUNBOOK_VM.md`. Production hardening: password policy, per-account lockout, change-password that signs out other sessions, API docs off in prod, `python -m app.cli doctor` readiness report, `create-entity` for first-run setup. The backup/restore scripts and the production-mode API were run against PostgreSQL 16; the container images and the compose stack have **not** been run (no Docker daemon in the build environment). No HA, no MFA, no off-site backup by default; the runbook lists these.
+
 ## Architecture
 `ingestion/` parsers + idempotent persistence -> `matching/` (context, identify, references, subset, tds, scoring, engine, actions) ->
 `workflow.py` (approvals, exceptions, manual match) -> `posting/` (canonical journal, connectors) -> `analytics.py`; REST in `api/`;

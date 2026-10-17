@@ -12,7 +12,7 @@ from sqlalchemy import func, select, text
 
 from . import config, migrate
 from .db import SessionLocal, engine
-from .models import Role, User
+from .models import LegalEntity, Role, User
 
 KNOWN_BAD_SECRETS = ("dev-only", "change-me", "changeme", "secret", "password")
 
@@ -78,6 +78,8 @@ def _users(out: list[Check]) -> None:
     with SessionLocal() as db:
         admins = db.execute(select(User).where(User.role == Role.admin, User.active.is_(True))).scalars().all()
         add("administrator", "ok" if admins else "fail", f"{len(admins)} active administrator(s)" if admins else "no active administrator: create one with `create-user`")
+        n_ent = db.scalar(select(func.count()).select_from(LegalEntity))
+        add("legal entity", "ok" if n_ent else "fail", f"{n_ent} legal entity(ies)" if n_ent else "none: run `create-entity` (the screens need one)")
         unchanged = [a.email for a in admins if a.password_changed_at is None]
         if unchanged:
             add("initial password", "warn", f"{', '.join(unchanged)} still use the password they were created with: change it after first sign-in")

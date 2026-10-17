@@ -104,6 +104,10 @@ def prod_like(db, monkeypatch):
     return db
 
 
+def db_is_sqlite(db):
+    return db.get_bind().dialect.name == "sqlite"
+
+
 def by_name(checks):
     return {c.name: c for c in checks}
 
@@ -122,9 +126,13 @@ def test_doctor_passes_a_sound_deployment_and_warns_about_what_is_only_adequate(
     prod_like.commit()
     c = by_name(doctor.run())
     assert c["environment"].status == c["signing secret"].status == c["demo data"].status == c["schema"].status == "ok"
+    assert c["legal entity"].status == "ok", "the World fixture has one"
     assert c["storage"].status == "ok" and c["administrator"].status == "ok" and c["demo accounts"].status == "ok"
     assert c["sign-in policy"].status == "warn" and "no MFA" in c["sign-in policy"].detail
-    assert c["database engine"].status == "warn", "the test database is SQLite"
+    if db_is_sqlite(prod_like):
+        assert c["database engine"].status == "warn"
+    else:
+        assert "database engine" not in c
     assert doctor.exit_code(doctor.run()) == 0
 
 
@@ -174,3 +182,40 @@ def test_cli_creates_and_resets_users_non_interactively_with_the_policy_applied(
     r = cli(tmp_path, "create-user", "b@corp.example", "--name", "B", "--password-env", "MISSING")
     assert r.returncode == 1 and "MISSING is not set" in r.stderr
     assert cli(tmp_path, "doctor").returncode == 1, "dev settings: the doctor refuses to bless them"
+
+
+def test_create_entity_sets_up_a_usable_suggest_only_tenant(db):
+    from app import onboard
+    from app.models import ApprovalPolicy, BankAccount, ToleranceRule
+
+    e = onboard.create_entity(db, "Acme Traders Pvt Ltd", "27AABCM4421F1ZU", None, ["HDFC Bank|50200012345678|HDFC0000123|1100-HDFC", "USD a/c|9988|||USD"])
+    assert e.pan == "AABCM4421F" and e.config["auto_approve_enabled"] is False and e.ledgers["ar_control"]
+    banks = db.execute(select(BankAccount).where(BankAccount.entity_id == e.id).order_by(BankAccount.id)).scalars().all()
+    assert [(b.ifsc, b.currency, b.ledger_code) for b in banks] == [("HDFC0000123", "INR", "1100-HDFC"), (None, "USD", "1100-BANK")]
+    assert db.query(ToleranceRule).filter_by(entity_id=e.id).count() == 1 and db.query(ApprovalPolicy).filter_by(entity_id=e.id).count() == 7
+
+
+@pytest.mark.parametrize("kw,msg", [({"name": " "}, "name is required"), ({"name": "X", "gstin": "27AABCM4421F1ZZ"}, "GSTIN"), ({"name": "X", "pan": "123"}, "PAN"),
+                                    ({"name": "X", "banks": ["only|two"]}, "use 'Bank name"), ({"name": "X", "banks": ["B|1|BAD|L"]}, "IFSC"), ({"name": "X", "banks": ["B|1||L|US"]}, "3-letter")])
+def test_create_entity_rejects_bad_input_without_writing_anything(db, kw, msg):
+    from app import onboard
+    from app.models import LegalEntity
+
+    with pytest.raises(onboard.OnboardError, match=msg):
+        onboard.create_entity(db, **kw)
+    assert db.query(LegalEntity).count() == 0
+
+
+def test_create_entity_refuses_a_duplicate_name(db):
+    from app import onboard
+
+    onboard.create_entity(db, "Acme")
+    with pytest.raises(onboard.OnboardError, match="already exists"):
+        onboard.create_entity(db, "Acme")
+
+
+def test_cli_create_entity(tmp_path):
+    assert cli(tmp_path, "migrate").returncode == 0
+    r = cli(tmp_path, "create-entity", "--name", "Acme", "--gstin", "27AABCM4421F1ZU", "--bank", "HDFC|123|HDFC0000123|1100-HDFC")
+    assert r.returncode == 0 and "created entity 1" in r.stdout and "1 bank" in r.stdout
+    assert cli(tmp_path, "create-entity", "--name", "Acme").returncode == 1

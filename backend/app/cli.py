@@ -26,6 +26,9 @@ def main(argv=None) -> int:
     a.add_argument("--password-env", help="read the password from this environment variable instead of prompting (for scripted installs)")
     r = sub.add_parser("reset-password", help="set a new password for a user (signs out their existing sessions)")
     r.add_argument("email"); r.add_argument("--password-env")
+    ce = sub.add_parser("create-entity", help="first-run: create the legal entity, its bank accounts, default tolerance and approval policies (suggest-only)")
+    ce.add_argument("--name", required=True); ce.add_argument("--gstin"); ce.add_argument("--pan")
+    ce.add_argument("--bank", action="append", default=[], help="'Bank name|account number|IFSC|ledger code[|currency]' (repeatable)")
     sub.add_parser("doctor", help="production readiness checks (non-zero exit if any fail)")
     sub.add_parser("seed-demo")
     sub.add_parser("fetch-fx", help="fetch the FBIL/RBI reference rates once (for cron)")
@@ -66,6 +69,16 @@ def main(argv=None) -> int:
         migrate.ensure_schema(engine, settings.auto_migrate)
     except migrate.SchemaError as e:
         print(f"ERROR: {e}", file=sys.stderr); return 2
+    if args.cmd == "create-entity":
+        from . import onboard
+
+        with SessionLocal() as db:
+            try:
+                e = onboard.create_entity(db, args.name, args.gstin, args.pan, args.bank)
+                db.commit()
+            except onboard.OnboardError as err:
+                print(f"ERROR: {err}", file=sys.stderr); return 1
+            print(f"created entity {e.id}: {e.name} (suggest-only mode, {len(args.bank)} bank account(s))"); return 0
     if args.cmd == "worker":
         import logging
 

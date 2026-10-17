@@ -1,0 +1,16 @@
+# Automatic HTTPS (Let's Encrypt) for $DOMAIN. Ports 80 and 443 must reach this machine and DNS must already point here.
+{$DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+	request_body {
+		max_size 30MB
+	}
+	reverse_proxy web:8080
+}
